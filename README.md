@@ -17,7 +17,7 @@ In the browser (after exporting):
 
 ```
 godot --headless --path . --export-release "Web" build/web/index.html
-npx http-server build/web -p 8139
+npx http-server build/web -p 8139      # in PowerShell: npx.cmd http-server build/web -p 8139
 ```
 
 Then open http://localhost:8139.
