@@ -15,14 +15,15 @@ const Upgrades := preload("res://scripts/upgrades.gd")
 const Relics := preload("res://scripts/relics.gd")
 const Screens := preload("res://scripts/screens.gd")
 const Music := preload("res://scripts/music.gd")
+const Foes := preload("res://scripts/foes.gd")
 
 enum State { TITLE, MAP, SHOP, SERVE, PLAY, ROUND_END, UPGRADE, RUN_OVER }
-enum PowerUp { FAST_BALL, MULTI_BALL, BIG_PADDLE, FAST_PADDLE, SHRINK_FOE, SLOW_FOE, WINGMAN, TURRET, POISON, BOOSTER }
+enum PowerUp { FAST_BALL, MULTI_BALL, BIG_PADDLE, SHRINK_FOE, SLOW_FOE, WINGMAN, TURRET, POISON, BOOSTER }
 
 const W := 240
 const H := 160
 const TOP := 14
-const BOTTOM := 156
+const BOTTOM := 150
 const PADDLE_W := 4
 const PADDLE_X: Array[int] = [8, W - 8 - PADDLE_W]
 const BALL := 4
@@ -48,7 +49,8 @@ const BG_FLASH := Palette.BG_FLASH
 const DIM := Palette.DIM
 const MID := Palette.MID
 const WHITE := Palette.WHITE
-const SIDE_COL: Array[Color] = [Palette.PLAYER, Palette.CPU]
+## Player orange and this level's opponent color (set from run.foe every frame).
+var side_col: Array[Color] = [Palette.PLAYER, Palette.CPU]
 const SPARK := Palette.SPARK
 const GEM_COL := Palette.GEM
 const BOSS_COL := Palette.BOSS
@@ -60,8 +62,6 @@ const PU_INFO := {
 		"icon": ["10001", "00000", "00100", "00000", "10001"]},
 	PowerUp.BIG_PADDLE: {"label": "BIG PADDLE!", "color": Color8(88, 216, 104),
 		"icon": ["01110", "00100", "00100", "00100", "01110"]},
-	PowerUp.FAST_PADDLE: {"label": "QUICK PADDLE!", "color": Color8(72, 200, 248),
-		"icon": ["00110", "01100", "11110", "00110", "01100"]},
 	PowerUp.SHRINK_FOE: {"label": "SHRINK FOE!", "color": Color8(248, 72, 72),
 		"icon": ["10001", "01010", "00100", "01010", "10001"]},
 	PowerUp.SLOW_FOE: {"label": "SLOW FOE!", "color": Color8(168, 104, 248),
@@ -79,7 +79,6 @@ const PU_INFO := {
 const EFFECT_INFO := {
 	"big": {"size": 1.5, "speed": 1.0, "pu": PowerUp.BIG_PADDLE},
 	"small": {"size": 0.6, "speed": 1.0, "pu": PowerUp.SHRINK_FOE},
-	"fast": {"size": 1.0, "speed": 1.5, "pu": PowerUp.FAST_PADDLE},
 	"slow": {"size": 1.0, "speed": 0.6, "pu": PowerUp.SLOW_FOE},
 	"boost": {"size": 1.0, "speed": 1.0, "pu": PowerUp.BOOSTER},
 	"burn": {"upgrade": "flame"},
@@ -114,8 +113,8 @@ var drones: Array[Dictionary] = []
 var units: Array[Dictionary] = []
 ## Poison built up on each side; at POISON TO TRIGGER the side's paddle freezes and its allies are hurt.
 var poison: Array[float] = [0.0, 0.0]
-## Seconds each paddle stays frozen.
-var frozen: Array[float] = [0.0, 0.0]
+## Poison patches on a paddle's track: {side, y (center), size, life, total}. Slow that paddle.
+var poison_areas: Array[Dictionary] = []
 ## Seconds played in this round, for the power-up ramp.
 var round_time: float = 0.0
 
@@ -188,6 +187,7 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	blink += delta
+	side_col[1] = foe_color()
 	AudioServer.set_bus_mute(0, tuning.get_value("sound") < 1.0)
 	if music:
 		# The round-end banner keeps the round's loop; the next screen picks its own.
@@ -210,16 +210,17 @@ func music_intensity() -> int:
 	match state:
 		State.TITLE, State.RUN_OVER:
 			return 0
-	return run.level + (1 if is_boss() and in_round() else 0)
+	return 1 + run.games[0] + run.games[1] + (1 if is_boss() else 0)
 
 
 ## Builds the loops the next screens will want while this one plays, so switching is instant.
 ## Most urgent first: the next game's loop (faster) or the next level's first one, then map and shop.
 func _prefetch_music() -> void:
 	music.background_budget = Music.SAMPLES_PER_FRAME if in_round() else Music.MENU_SAMPLES_PER_FRAME
-	var round_intensity: int = run.level + (1 if is_boss() else 0)
+	var games: int = run.games[0] + run.games[1]
+	var round_intensity: int = 1 + (1 if is_boss() else 0)
 	if in_round():
-		music.prefetch(round_intensity, "game", run.games[0] + run.games[1] + 1)
+		music.prefetch(round_intensity + games + 1, "game", games + 1)
 	elif state != State.TITLE and state != State.RUN_OVER:
 		music.prefetch(round_intensity, "game", 0)
 	music.prefetch(0, "map")
@@ -302,6 +303,8 @@ func title_choose(index: int) -> void:
 		return
 	if items[index].id == "continue":
 		run.resume()
+		if run.foe.is_empty():
+			run.foe = Foes.roll(rng, is_boss())
 		_enter_map(false)
 	else:
 		start_run()
@@ -457,6 +460,7 @@ func pause_items() -> Array[Dictionary]:
 		{"id": "resume", "label": "RESUME"},
 		{"id": "sound", "label": "SOUND: " + ("ON" if tuning.get_value("sound") >= 1.0 else "OFF")},
 		{"id": "relics", "label": "RELICS (%d)" % run.relics.size()},
+		{"id": "debug", "label": "DEBUG MENU"},
 		{"id": "suspend", "label": "SUSPEND RUN"},
 		{"id": "menu", "label": "MAIN MENU (END RUN)"},
 	]
@@ -521,6 +525,9 @@ func pause_choose(index: int) -> void:
 		"relics":
 			pause_view = "relics"
 			_play("menu")
+		"debug":
+			# Opens over the pause menu; closing it comes back here.
+			_toggle_menu()
 		"suspend":
 			run.suspend()
 			_leave_to_title()
@@ -545,6 +552,7 @@ func _leave_to_title() -> void:
 ## A new run opens with a free upgrade pick, then the map.
 func start_run() -> void:
 	run.start()
+	run.foe = Foes.roll(rng, is_boss())
 	offers = Upgrades.offers(rng, run.stacks)
 	offer_index = 0
 	starting_pick = true
@@ -561,7 +569,7 @@ func _clear_field() -> void:
 	units.clear()
 	effects = [{}, {}]
 	poison = [0.0, 0.0]
-	frozen = [0.0, 0.0]
+	poison_areas.clear()
 
 
 func start_round() -> void:
@@ -590,6 +598,14 @@ func _start_game() -> void:
 			_add_effect(side, "boost", 2.0 * level_of(side, "overcharge"), side)
 
 
+func foe_name() -> String:
+	return run.foe.get("name", "CPU")
+
+
+func foe_color() -> Color:
+	return run.foe.get("color", Palette.CPU)
+
+
 func games_to_win() -> int:
 	return int(tuning.get_value("best_of")) / 2 + 1
 
@@ -616,8 +632,8 @@ func _game_won(winner: int) -> void:
 	run.streak = run.streak + 1 if winner == 0 else 0
 	scores = [0, 0]
 	balls.clear()
-	var color: Color = SIDE_COL[winner]
-	_popup("GAME!" if winner == 0 else "CPU GAME", Vector2(W / 2.0, 40.0), color, 1.0)
+	var color: Color = side_col[winner]
+	_popup("GAME!" if winner == 0 else foe_name() + " GAME", Vector2(W / 2.0, 40.0), color, 1.0)
 	_burst(Vector2(W / 2.0, H / 2.0), Vector2.ZERO, 24, color)
 	if run.games[winner] >= games_to_win():
 		_round_end(winner)
@@ -637,6 +653,7 @@ func _round_end(winner: int) -> void:
 		run.clear_round(int(tuning.get_value("boss_every")), int(tuning.get_value("shop_every")))
 		for i in int(tuning.get_value("cpu_upgrades")):
 			give_cpu_upgrade()
+		run.foe = Foes.roll(rng, is_boss(), run.foe)
 		_play("win")
 	else:
 		_play("lose")
@@ -736,15 +753,12 @@ func simulate(delta: float, dir: float) -> void:
 		hitstop -= delta
 		return
 
-	if frozen[0] <= 0.0:
-		_move_paddle(0, dir * paddle_speed(0) * delta)
-		# Swipes move the paddle directly, scaled by speed effects and upgrades so they still matter.
-		_move_paddle(0, pending_swipe * paddle_speed(0) / tuning.get_value("player_speed"))
+	_move_paddle(0, dir * paddle_speed(0) * delta)
+	# Swipes move the paddle directly, scaled by speed effects so they still matter.
+	_move_paddle(0, pending_swipe * paddle_speed(0) / tuning.get_value("player_speed"))
 	pending_swipe = 0.0
-	for side in 2:
-		frozen[side] = maxf(0.0, frozen[side] - delta)
-	if frozen[1] <= 0.0:
-		_update_cpu(delta)
+	_update_cpu(delta)
+	_tick_poison_areas(delta)
 	_tick_paddle_effects(delta)
 	_update_allies(delta)
 
@@ -804,14 +818,34 @@ func paddle_speed(side: int) -> float:
 		s = tuning.get_value("player_speed") * momentum_factor(0)
 	else:
 		s = tuning.get_value("cpu_speed") * level_factor("cpu_lv")
-	s *= 1.0 + 0.15 * up(side, "swift")
 	for name in effects[side]:
 		var e: Dictionary = effects[side][name]
 		if name == "slime":
 			s *= slime_factor(e.src)
 		elif EFFECT_INFO[name].has("speed"):
 			s *= _boosted(EFFECT_INFO[name].speed, e.src)
+	if in_poison(side):
+		s *= tuning.get_value("poison_area_slow")
 	return s
+
+
+## True while the center of side's paddle is over one of its poison patches.
+func in_poison(side: int) -> bool:
+	for a in poison_areas:
+		if a.side == side and absf(paddle_cy[side] - a.y) <= a.size / 2.0:
+			return true
+	return false
+
+
+func _tick_poison_areas(delta: float) -> void:
+	for i in range(poison_areas.size() - 1, -1, -1):
+		var a: Dictionary = poison_areas[i]
+		a.life -= delta
+		if a.life <= 0.0:
+			poison_areas.remove_at(i)
+		elif rng.randf() < 0.15:
+			particles.append({"pos": Vector2(PADDLE_X[a.side] + rng.randf_range(-2, PADDLE_W + 2), a.y + rng.randf_range(-a.size / 2.0, a.size / 2.0)),
+				"vel": Vector2(0, -12), "life": 0.3, "color": upgrade_color("venom")})
 
 
 ## VIRULENT relic (player only): status effects last and hit 50% more.
@@ -842,7 +876,7 @@ func _begin_serve(extra_delay: float = 0.0) -> void:
 	state = State.SERVE
 	serve_timer = tuning.get_value("serve_delay") + extra_delay
 	var game_no: int = run.games[0] + run.games[1] + 1
-	banner = ("BOSS " if is_boss() else "") + "LEVEL %d  GAME %d" % [run.level, game_no]
+	banner = "%s  GAME %d" % [foe_name(), game_no]
 	var ball := Ball.new()
 	ball.pos = Vector2((W - BALL) / 2.0, (H - BALL) / 2.0)
 	balls = [ball]
@@ -992,23 +1026,19 @@ func _inflict(ball: Ball, side: int, center: Vector2) -> void:
 		_burst(center, away, 8, upgrade_color("venom"))
 
 
-## Adds poison to side; reaching POISON TO TRIGGER freezes its paddle and hurts its allies.
+## Adds poison to side; reaching POISON TO TRIGGER leaves a poison patch on that paddle's track,
+## centered where the paddle is now, that slows the paddle while it is over it.
 func add_poison(side: int, amount: float) -> void:
 	poison[side] += amount
 	if poison[side] < tuning.get_value("poison_cap"):
 		return
 	poison[side] = 0.0
-	frozen[side] = tuning.get_value("poison_freeze")
+	var life: float = tuning.get_value("poison_area_time")
+	poison_areas.append({"side": side, "y": paddle_cy[side], "size": tuning.get_value("poison_area_size"), "life": life, "total": life})
 	var at := Vector2(PADDLE_X[side] + PADDLE_W / 2.0, paddle_cy[side])
-	_popup("POISONED!", at + Vector2(16 if side == 0 else -16, -10), upgrade_color("venom"), 1.0)
+	_popup("POISONED!", at + Vector2(18 if side == 0 else -18, -10), upgrade_color("venom"), 1.0)
 	_burst(at, Vector2.ZERO, 24, upgrade_color("venom"))
-	for d in drones.duplicate():
-		if d.side == side:
-			_damage_drone(d)
-	for u in units:
-		if u.side == side and u.alive:
-			_damage_unit(u)
-	_shake(4.0)
+	_shake(3.0)
 	_play("poison")
 
 
@@ -1039,7 +1069,7 @@ func _goal(ball: Ball, scorer: int) -> void:
 	_shake(5.0)
 	bg_flash = 0.08
 	var edge_x: float = 0.0 if scorer == 1 else float(W)
-	_burst(Vector2(edge_x, ball.pos.y), Vector2(1.0 if scorer == 1 else -1.0, 0.0), 18, SIDE_COL[scorer])
+	_burst(Vector2(edge_x, ball.pos.y), Vector2(1.0 if scorer == 1 else -1.0, 0.0), 18, side_col[scorer])
 	_play("score")
 	serve_dir = -1 if scorer == 0 else 1
 	if scores[scorer] >= int(tuning.get_value("points_per_game")):
@@ -1292,8 +1322,6 @@ func apply_powerup(type: int, side: int, ball: Ball = null) -> void:
 				_split_ball(ball, MULTI_SPREAD)
 		PowerUp.BIG_PADDLE:
 			_add_effect(side, "big", duration, side)
-		PowerUp.FAST_PADDLE:
-			_add_effect(side, "fast", duration, side)
 		PowerUp.SHRINK_FOE:
 			_add_effect(foe, "small", duration, side)
 		PowerUp.SLOW_FOE:
@@ -1466,7 +1494,7 @@ func _menu_action(action: String, steps: int = 1) -> void:
 				"cpu_upgrade":
 					var id: String = give_cpu_upgrade()
 					if id != "":
-						_popup("CPU GOT " + Upgrades.DEFS[id].name, Vector2(W / 2.0, 30.0), SIDE_COL[1])
+						_popup("CPU GOT " + Upgrades.DEFS[id].name, Vector2(W / 2.0, 30.0), side_col[1])
 				"poison_cpu":
 					add_poison(1, 5.0)
 				"upgrade":
@@ -1544,8 +1572,11 @@ func _draw_court() -> void:
 	_draw_score(1, W / 2 + 19)
 	_draw_game_pips()
 	_draw_poison_meters()
+	_draw_round_info()
 	_draw_effect_icons(0)
 	_draw_effect_icons(1)
+	_draw_upgrade_bars()
+	_draw_poison_areas()
 
 	if touch_buttons_on() and in_round():
 		_draw_touch_button(TOUCH_UP, true, button_touches.values().has(-1.0))
@@ -1578,20 +1609,20 @@ func _draw_court() -> void:
 					_draw_ball(ball)
 		State.ROUND_END:
 			var text: String = "ROUND CLEAR!" if round_won else "ROUND LOST"
-			var color: Color = SIDE_COL[0] if round_won else SIDE_COL[1]
+			var color: Color = side_col[0] if round_won else side_col[1]
 			if fmod(transition, 0.3) > 0.08:
 				PixelFont.draw(self, text, W / 2, 62, 3, color, PixelFont.Align.CENTER)
 
 
 func _draw_drone(d: Dictionary) -> void:
-	var color: Color = WHITE if d.flash > 0.0 else SIDE_COL[d.side].lerp(PU_INFO[PowerUp.WINGMAN].color, 0.5)
+	var color: Color = WHITE if d.flash > 0.0 else side_col[d.side].lerp(PU_INFO[PowerUp.WINGMAN].color, 0.5)
 	var rect := Rect2(Vector2(d.x, d.y - DRONE_H / 2.0).round(), Vector2(DRONE_W, DRONE_H))
 	draw_rect(rect, color)
 	_draw_hp(Vector2(rect.position.x + DRONE_W / 2.0, rect.position.y - 3), d.hp, d.max_hp)
 
 
 func _draw_unit(u: Dictionary) -> void:
-	var color: Color = PU_INFO[PowerUp.TURRET].color if u.side == 0 else SIDE_COL[1]
+	var color: Color = PU_INFO[PowerUp.TURRET].color if u.side == 0 else side_col[1]
 	var reach: float = tuning.get_value("unit_range")
 	if not u.alive:
 		# Rubble plus a bar that fills as it rebuilds.
@@ -1638,7 +1669,7 @@ func _draw_game_pips() -> void:
 			var x: int = (W / 2 - 34 - i * 5) if side == 0 else (W / 2 + 31 + i * 5)
 			var rect := Rect2(x, 5, 3, 3)
 			if i < run.games[side]:
-				draw_rect(rect, SIDE_COL[side])
+				draw_rect(rect, side_col[side])
 			else:
 				draw_rect(rect, DIM)
 
@@ -1676,9 +1707,9 @@ func _draw_ball(ball: Ball) -> void:
 func _draw_paddle(side: int) -> void:
 	var flash: bool = paddle_flash[side] > 0.0
 	var kick: float = (2.0 if side == 1 else -2.0) if flash else 0.0
-	var color: Color = WHITE if flash else SIDE_COL[side]
-	if frozen[side] > 0.0:
-		color = Color8(168, 216, 248) if fmod(blink, 0.16) < 0.12 else upgrade_color("venom")
+	var color: Color = WHITE if flash else side_col[side]
+	if in_poison(side) and fmod(blink, 0.3) < 0.1:
+		color = upgrade_color("venom")
 	var rect := Rect2(Vector2(PADDLE_X[side] + kick, paddle_top(side)).round(), Vector2(PADDLE_W, paddle_height(side)))
 	if effects[side].has("boost") and fmod(blink, 0.1) < 0.05:
 		draw_rect(rect.grow(1), PU_INFO[PowerUp.BOOSTER].color)
@@ -1741,9 +1772,43 @@ func draw_icon(rows: Array, pos: Vector2, color: Color, scale: int = 1) -> void:
 				draw_rect(Rect2(pos.x + col * scale, pos.y + row * scale, scale, scale), color)
 
 
-## Small icons with time bars in the HUD for each active paddle effect (left side starts after the pause button).
+## Level on the left (red on a boss level) and the current game out of the best-of on the right.
+func _draw_round_info() -> void:
+	PixelFont.draw(self, "LV%d" % run.level, 15, 4, 1, BOSS_COL if is_boss() else MID)
+	var game_no: int = mini(run.games[0] + run.games[1] + 1, int(tuning.get_value("best_of")))
+	PixelFont.draw(self, "G%d/%d" % [game_no, int(tuning.get_value("best_of"))], W - 2, 4, 1, MID, PixelFont.Align.RIGHT)
+
+
+## Both sides' run upgrades as icons with their level, under the court: yours left, the foe's right.
+func _draw_upgrade_bars() -> void:
+	draw_rect(Rect2(0, BOTTOM + 2, W, H - BOTTOM - 2), BG)
+	for side in 2:
+		var stacks: Dictionary = run.stacks if side == 0 else run.cpu_stacks
+		var x: int = 2 if side == 0 else W - 11
+		for id in stacks:
+			draw_icon(Upgrades.DEFS[id].icon, Vector2(x, BOTTOM + 4), Upgrades.DEFS[id].color)
+			PixelFont.draw(self, str(stacks[id]), x + 6, BOTTOM + 4, 1, side_col[side].darkened(0.2))
+			x += 11 if side == 0 else -11
+
+
+## Poison patches: a speckled purple strip on the paddle's track that blinks out as it ends.
+func _draw_poison_areas() -> void:
+	for a in poison_areas:
+		if a.life < 1.0 and fmod(a.life, 0.2) < 0.1:
+			continue
+		var x: float = PADDLE_X[a.side] - 2
+		var top: int = int(maxf(TOP, a.y - a.size / 2.0))
+		var bottom: int = int(minf(BOTTOM, a.y + a.size / 2.0))
+		for y in range(top, bottom):
+			for dx in PADDLE_W + 4:
+				# Checkerboard dither keeps it readable under the paddle.
+				if (dx + y) % 2 == 0:
+					draw_rect(Rect2(x + dx, y, 1, 1), upgrade_color("venom").darkened(0.35))
+
+
+## Small icons with time bars in the HUD for each active paddle effect (after the pause button and level).
 func _draw_effect_icons(side: int) -> void:
-	var x: int = 16 if side == 0 else W - 9
+	var x: int = 33 if side == 0 else W - 26
 	var step: int = 8 if side == 0 else -8
 	for name in effects[side]:
 		var color: Color = effect_color(name)
@@ -1757,7 +1822,7 @@ func _draw_score(side: int, x: int) -> void:
 	var pop: float = score_pop[side]
 	var scale: int = 3 if pop > 0.0 else 2
 	var y: int = 0 if pop > 0.0 else 2
-	PixelFont.draw(self, str(scores[side]), x, y, scale, WHITE if pop > 0.15 else SIDE_COL[side], PixelFont.Align.CENTER)
+	PixelFont.draw(self, str(scores[side]), x, y, scale, WHITE if pop > 0.15 else side_col[side], PixelFont.Align.CENTER)
 
 
 func _draw_menu() -> void:
@@ -1779,7 +1844,7 @@ func _draw_menu() -> void:
 		var color: Color = WHITE if selected else MID
 		if selected:
 			draw_rect(Rect2(0, y - 1, W, 7), DIM)
-			PixelFont.draw(self, ">", 3, y, 1, SIDE_COL[0])
+			PixelFont.draw(self, ">", 3, y, 1, side_col[0])
 		var label_color: Color = color
 		if selected and item.kind == "spawn":
 			label_color = PU_INFO[item.type].color
@@ -1792,7 +1857,7 @@ func _draw_menu() -> void:
 			var text: String = tuning.format(item.key)
 			if selected:
 				text = "< " + text + " >"
-			PixelFont.draw(self, text, W - 4, y, 1, SIDE_COL[0] if selected else color, PixelFont.Align.RIGHT)
+			PixelFont.draw(self, text, W - 4, y, 1, side_col[0] if selected else color, PixelFont.Align.RIGHT)
 		elif item.kind == "upgrade":
 			PixelFont.draw(self, "LV %d" % run.stack(item.id), W - 4, y, 1, color, PixelFont.Align.RIGHT)
 		elif item.kind == "relic":

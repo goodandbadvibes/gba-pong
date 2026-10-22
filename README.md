@@ -8,8 +8,8 @@ a 3x5 pixel font and square-wave blips. Made with Godot 4.7.2.
 **How a run works:** points win a *game* (first to 3), games win a *round* (best of 5), and
 each round is one node on the map. A run starts with a free pick of one of three upgrades. Win a
 round to pick another and move to the next
-node; lose one and the run is over. Every 2 levels the map stops at a **relic shop**. Opponents get faster and aim better every level, gain one random upgrade per level after the
-first (their burn, slime and poison hit you too), and every 5th level is a boss. You earn gems as you go (2 per round cleared, 5 per boss, plus gem shards you collect) and
+node; lose one and the run is over. Every 2 levels the map stops at a **relic shop**. Every level brings a new named opponent in its own color (bosses in red). Opponents get faster
+and aim better every level, gain one random upgrade per level after the first (their burn, slime and poison hit you too), and every 5th level is a boss. You earn gems as you go (2 per round cleared, 5 per boss, plus gem shards you collect) and
 spend them on relics. Your best run and gems are saved, and a run can be suspended and continued.
 
 **Controls:** Up / Down arrows (or a gamepad d-pad); Left / Right and Enter on the upgrade screen.
@@ -25,12 +25,11 @@ buttons.
 | SLIME BALL | balls you hit turn slimy; a slimy hit slows the CPU paddle until it wears off |
 | MAGNET BALL | balls you hit pull in nearby power-ups and gem shards |
 | LONG PADDLE | +15% paddle size per level |
-| SWIFT PADDLE | +15% paddle speed per level |
 | POWER HIT | balls you hit fly 12% faster per level |
 | LUCKY FIND | more power-ups and gem shards, shards worth more |
 | BIG GRAB | your balls collect things from further away |
 | WINGMAN | every game starts with an extra paddle per level that patrols up and down in front of yours |
-| VENOM BALL | balls you hit are poisonous; enough poison freezes the foe paddle for a second and costs its wingmen and turrets 1 HP |
+| VENOM BALL | balls you hit are poisonous; at 10 poison a poison patch appears on the foe's track and slows its paddle while it is over it |
 | OVERCHARGE | every game starts with a booster, 2 seconds per level |
 | TURRET | a turret per level guards your side and swats balls that come close; it rebuilds after a cooldown |
 
@@ -52,13 +51,18 @@ paddle hit. The WINGMAN and TURRET power-ups give either side a one-off wingman 
 | SECOND WIND | once per run, a lost round does not end the run |
 | GEM TITHE | +2 gems for every round cleared |
 
+**HUD:** level (top left, red on a boss level), current game out of the best-of (top right), games
+won beside each score, active effects with timers at the top, and both sides' upgrades along the
+bottom (yours left, the opponent's right).
+
 **Pause:** Esc, P or the II button in the top-left corner. Resume, sound on/off, view your relics,
+open the debug menu,
 suspend the run (continue it from the title), end the run and go to the main menu, or quit
 (desktop only). Relics are also shown on the map.
 
 **Music** is generated in code with GBA-style channels (two pulse waves, a 4-bit wave bass and
-LFSR noise, 8-bit at 16 kHz). It starts as a low pulse and gets more layers every level; the tempo
-rises each level and again with every game inside a level. The map and upgrade screens have
+LFSR noise, 8-bit at 16 kHz). Every level starts with a low pulse and bass, and each game played adds a
+layer (hats, arpeggio, lead); the tempo rises each level and again with every game. The map and upgrade screens have
 their own calm track and the shop a bouncy one. The debug menu sets volume, base tempo, tempo per level, a fixed intensity and each layer
 (OFF / AUTO / ON).
 
@@ -75,7 +79,6 @@ coming twice as often (both tunable).
 | yellow | FAST BALL | that ball speeds up 35% |
 | white | MULTI BALL | two extra balls split off it |
 | green | BIG PADDLE | collector paddle 1.5x taller |
-| cyan | QUICK PADDLE | collector paddle 1.5x faster |
 | red | SHRINK FOE | opponent paddle 0.6x as tall |
 | purple | SLOW FOE | opponent paddle 0.6x as fast |
 

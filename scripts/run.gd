@@ -3,6 +3,8 @@ extends RefCounted
 ## best run and gem wallet. Gems are credited as they are earned so the shop can spend them mid-run.
 ## A run can be suspended to the save file and continued later.
 
+const Upgrades := preload("res://scripts/upgrades.gd")
+
 const SAVE_PATH := "user://save.cfg"
 const GEMS_PER_ROUND := 2
 const GEMS_PER_BOSS := 5
@@ -17,6 +19,8 @@ var bosses: int = 0
 var shards: int = 0
 var tithe: int = 0
 var stacks: Dictionary = {}
+## This level's opponent: {"name": String, "color": Color}.
+var foe: Dictionary = {}
 ## The opponent's upgrades: one more each level after the first.
 var cpu_stacks: Dictionary = {}
 var relics: Array[String] = []
@@ -38,6 +42,7 @@ func start() -> void:
 	shards = 0
 	tithe = 0
 	stacks = {}
+	foe = {}
 	cpu_stacks = {}
 	relics.clear()
 	games.assign([0, 0])
@@ -122,7 +127,7 @@ func finish() -> Dictionary:
 func to_dict() -> Dictionary:
 	return {"level": level, "cleared": cleared, "bosses": bosses, "shards": shards, "tithe": tithe,
 		"stacks": stacks.duplicate(), "cpu_stacks": cpu_stacks.duplicate(), "relics": relics.duplicate(), "streak": streak,
-		"second_wind_used": second_wind_used, "shop_pending": shop_pending}
+		"second_wind_used": second_wind_used, "shop_pending": shop_pending, "foe": foe.duplicate()}
 
 
 func from_dict(d: Dictionary) -> void:
@@ -131,13 +136,23 @@ func from_dict(d: Dictionary) -> void:
 	bosses = int(d.get("bosses", 0))
 	shards = int(d.get("shards", 0))
 	tithe = int(d.get("tithe", 0))
-	stacks = Dictionary(d.get("stacks", {})).duplicate()
-	cpu_stacks = Dictionary(d.get("cpu_stacks", {})).duplicate()
+	stacks = _known(d.get("stacks", {}))
+	cpu_stacks = _known(d.get("cpu_stacks", {}))
+	foe = Dictionary(d.get("foe", {})).duplicate()
 	relics.assign(d.get("relics", []))
 	streak = int(d.get("streak", 0))
 	second_wind_used = bool(d.get("second_wind_used", false))
 	shop_pending = bool(d.get("shop_pending", false))
 	games.assign([0, 0])
+
+
+## Drops upgrades a newer version of the game no longer has (from older suspended runs).
+static func _known(saved: Dictionary) -> Dictionary:
+	var out: Dictionary = {}
+	for id in saved:
+		if Upgrades.DEFS.has(id):
+			out[id] = saved[id]
+	return out
 
 
 func suspend() -> void:

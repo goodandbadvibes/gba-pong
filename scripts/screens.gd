@@ -61,8 +61,9 @@ static func draw_map(g: Node2D) -> void:
 	var boss_every: int = int(g.tuning.get_value("boss_every"))
 	var boss: bool = Run.is_boss(run.level, boss_every)
 	var title: String = ("BOSS LEVEL %d" if boss else "LEVEL %d") % run.level
-	PixelFont.draw(g, title, W / 2, 6, 2, Palette.BOSS if boss else Palette.WHITE, CENTER)
-	PixelFont.draw(g, "BEST %d   GEMS %d" % [run.best_cleared, run.gems], W / 2, 22, 1, Palette.GEM, CENTER)
+	PixelFont.draw(g, title, W / 2, 4, 2, Palette.BOSS if boss else Palette.WHITE, CENTER)
+	PixelFont.draw(g, "VS " + g.foe_name(), W / 2, 19, 1, g.foe_color(), CENTER)
+	PixelFont.draw(g, "BEST %d   GEMS %d" % [run.best_cleared, run.gems], W / 2, 28, 1, Palette.GEM, CENTER)
 
 	# A row of seven nodes around the current level, cleared ones on the left.
 	var first: int = maxi(1, run.level - 3)
@@ -105,7 +106,7 @@ static func draw_map(g: Node2D) -> void:
 	_draw_owned(g, 100)
 	PixelFont.draw(g, "RELICS", 6, 114, 1, Palette.DIM)
 	_draw_relics_row(g, 113)
-	PixelFont.draw(g, "FOE", 6, 127, 1, Palette.CPU.darkened(0.3))
+	PixelFont.draw(g, "FOE", 6, 127, 1, g.foe_color().darkened(0.3))
 	_draw_owned(g, 126, run.cpu_stacks)
 	if g.map_anim <= 0.0 and fmod(g.blink, 0.8) < 0.5:
 		var prompt: String = "PRESS OR TAP TO ENTER THE SHOP" if run.shop_pending else "PRESS UP OR DOWN OR TAP TO PLAY"
@@ -192,7 +193,7 @@ static func card_at(pos: Vector2, count: int) -> int:
 static func draw_run_over(g: Node2D) -> void:
 	var result: Dictionary = g.run_result
 	PixelFont.draw(g, "RUN OVER", W / 2, 6, 3, Palette.CPU, CENTER)
-	PixelFont.draw(g, "REACHED LEVEL %d   ROUNDS CLEARED %d" % [g.run.level, g.run.cleared], W / 2, 30, 1, Palette.WHITE, CENTER)
+	PixelFont.draw(g, "BEATEN BY %s ON LEVEL %d" % [g.foe_name(), g.run.level], W / 2, 30, 1, g.foe_color(), CENTER)
 	var rows := [
 		["ROUNDS CLEARED", result.get("rounds", 0)],
 		["BOSSES BEATEN", result.get("bosses", 0)],

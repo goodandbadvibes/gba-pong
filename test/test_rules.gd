@@ -28,7 +28,7 @@ func _initialize() -> void:
 	_test_round_loss_ends_run_and_banks_gems()
 	_test_difficulty_scales_with_level_and_boss()
 	# Upgrades
-	_test_long_and_swift()
+	_test_long_paddle()
 	_test_flame_burns_cpu_paddle_then_recovers()
 	_test_slime_slows_cpu()
 	_test_magnet_pulls_pickups()
@@ -67,6 +67,11 @@ func _initialize() -> void:
 	_test_music_switches_instantly_when_cached()
 	_test_music_prefetch_makes_switch_instant()
 	_test_music_missing_loop_builds_fast()
+	# Opponents, pause debug, music layers
+	_test_each_level_has_a_named_opponent()
+	_test_suspended_run_keeps_foe_and_drops_unknown_upgrades()
+	_test_debug_menu_from_pause()
+	_test_music_layers_build_within_a_level()
 	# Touch
 	_test_tap_flow_title_map_round()
 	_test_swipe_moves_paddle()
@@ -268,14 +273,13 @@ func _test_effects_expire() -> void:
 	var game := _game()
 	game.tuning.set_value("pu_duration", 2.0)
 	_playing(game, Vector2(120.0, 80.0), Vector2(10.0, 0.0))
-	game.apply_powerup(game.PowerUp.FAST_PADDLE, 0)
-	_expect(game.paddle_speed(0) > game.tuning.get_value("player_speed"), "QUICK PADDLE should speed up the paddle")
+	var h: float = game.paddle_height(0)
+	game.apply_powerup(game.PowerUp.BIG_PADDLE, 0)
+	_expect(game.paddle_height(0) > h, "BIG PADDLE should grow the paddle")
 	_step(game, 150)
-	_expect(not game.effects[0].has("fast"), "effects should wear off after the effect time")
+	_expect(not game.effects[0].has("big") and game.paddle_height(0) == h, "effects should wear off after the effect time")
 	game.free()
 
-
-# ---------------------------------------------------------------- games, rounds, run
 
 func _test_game_win_resets_points() -> void:
 	var game := _game()
@@ -351,15 +355,13 @@ func _test_difficulty_scales_with_level_and_boss() -> void:
 
 # ---------------------------------------------------------------- upgrades
 
-func _test_long_and_swift() -> void:
+func _test_long_paddle() -> void:
 	var game := _game()
 	var h: float = game.paddle_height(0)
-	var s: float = game.paddle_speed(0)
 	game.run.add("long")
-	game.run.add("swift")
 	_expect(game.paddle_height(0) > h, "LONG PADDLE should make the paddle taller")
-	_expect(game.paddle_speed(0) > s, "SWIFT PADDLE should make the paddle faster")
 	_expect(game.paddle_height(1) == h, "LONG PADDLE should not affect the CPU")
+	_expect(not game.Upgrades.DEFS.has("swift") and not game.PowerUp.has("FAST_PADDLE"), "paddle speed upgrades and power-ups are gone")
 	game.free()
 
 
@@ -910,10 +912,10 @@ func _test_venom_builds_poison_and_triggers() -> void:
 	var game := _game()
 	game.run.add("venom")
 	game.tuning.set_value("poison_cap", 4.0)
-	game.tuning.set_value("poison_freeze", 1.0)
-	game.tuning.set_value("drone_speed", 10.0)
-	game.spawn_drone(1, false)
-	var hp: int = game.drones[0].hp
+	game.tuning.set_value("poison_area_size", 30.0)
+	game.tuning.set_value("poison_area_time", 2.0)
+	game.tuning.set_value("poison_area_slow", 0.5)
+	var speed: float = game.paddle_speed(1)
 	for hit in 2:
 		game.paddle_cy[0] = 72.0
 		var ball := _playing(game, Vector2(14.0, 70.0), Vector2(-120.0, 0.0))
@@ -924,18 +926,17 @@ func _test_venom_builds_poison_and_triggers() -> void:
 		_step(game, 8)
 		if hit == 0:
 			_expect(is_equal_approx(game.poison[1], 2.0), "one poisonous hit should add 2 poison, got %s" % game.poison[1])
-	_expect(game.poison[1] == 0.0 and game.frozen[1] > 0.0, "reaching the cap should freeze the CPU paddle and reset its poison")
-	_expect(game.drones.is_empty() or game.drones[0].hp < hp, "the poison burst should hurt the CPU's wingmen")
-	var y: float = game.paddle_cy[1]
+	_expect(game.poison[1] == 0.0 and game.poison_areas.size() == 1 and game.poison_areas[0].side == 1, "reaching the cap should leave a poison patch on the CPU's track")
+	var patch_y: float = game.poison_areas[0].y
+	game.paddle_cy[1] = patch_y
+	_expect(game.in_poison(1) and is_equal_approx(game.paddle_speed(1), speed * 0.5), "the CPU paddle should move at half speed on the patch")
+	game.paddle_cy[1] = patch_y + 40.0 if patch_y < 80.0 else patch_y - 40.0
+	_expect(not game.in_poison(1) and is_equal_approx(game.paddle_speed(1), speed), "off the patch the paddle should move normally")
 	game.balls.clear()
 	game.state = game.State.SERVE
 	game.serve_timer = 10.0
-	game.paddle_cy[1] = 30.0
-	y = game.paddle_cy[1]
-	_step(game, 20)
-	_expect(game.paddle_cy[1] == y, "a frozen paddle should not move")
-	_step(game, 60)
-	_expect(game.paddle_cy[1] != y, "the paddle should move again after the freeze")
+	_step(game, 150)
+	_expect(game.poison_areas.is_empty(), "the patch should vanish after POISON PATCH TIME")
 	game.free()
 
 
@@ -1047,3 +1048,64 @@ func _test_music_missing_loop_builds_fast() -> void:
 	_expect(music.current_key == music.spec(6, "game", 2).key, "the wanted loop should start once built")
 	_expect(frames <= 45, "an urgent loop should be ready within 45 frames, took %d" % frames)
 	music.free()
+
+
+# ---------------------------------------------------------------- opponents, pause debug, music layers
+
+func _test_each_level_has_a_named_opponent() -> void:
+	var game := _new_game()
+	game.tuning.set_value("points_per_game", 1.0)
+	game.tuning.set_value("best_of", 1.0)
+	game.tuning.set_value("boss_every", 3.0)
+	game.start_run()
+	game.pick_upgrade(0)
+	var first: Dictionary = game.run.foe.duplicate()
+	_expect(first.has("name") and first.name != "" and game.foe_color() == first.color, "level 1 should have a named opponent with a color")
+	_expect(game.foe_color() != game.Palette.PLAYER, "the opponent never uses the player's orange")
+	for lvl in 2:
+		game.start_round()
+		_score_point(game, 0)
+		_step(game, 120)
+		game.pick_upgrade(0)
+	_expect(game.run.level == 3 and game.is_boss(), "level 3 should be a boss here")
+	_expect(game.Foes.BOSSES.has(game.foe_name()) and game.foe_color() == game.Foes.BOSS_COLOR, "a boss level should bring a boss opponent in boss red, got %s" % game.foe_name())
+	game.free()
+
+
+func _test_suspended_run_keeps_foe_and_drops_unknown_upgrades() -> void:
+	var game := _game()
+	game.run.foe = {"name": "BIT BARON", "color": Color8(120, 200, 248)}
+	game.run.stacks = {"long": 2}
+	game.run.suspend()
+	game.run.suspended["stacks"]["swift"] = 2
+	game.run.suspended["cpu_stacks"] = {"swift": 1, "flame": 1}
+	game.run.foe = {}
+	game.title_choose(0)
+	_expect(game.foe_name() == "BIT BARON", "a continued run should keep its opponent")
+	_expect(game.run.stacks == {"long": 2} and game.run.cpu_stacks == {"flame": 1}, "upgrades that no longer exist should be dropped, got %s / %s" % [game.run.stacks, game.run.cpu_stacks])
+	game.free()
+
+
+func _test_debug_menu_from_pause() -> void:
+	var game := _game()
+	game.set_paused(true)
+	game.pause_choose(_pause_id(game, "debug"))
+	_expect(game.menu_open and game.paused, "DEBUG MENU in the pause menu should open the debug menu over it")
+	game._toggle_menu()
+	_expect(not game.menu_open and game.paused, "closing the debug menu should return to the pause menu")
+	game.free()
+
+
+func _test_music_layers_build_within_a_level() -> void:
+	var game := _game()
+	game.tuning.set_value("points_per_game", 1.0)
+	game.tuning.set_value("best_of", 5.0)
+	game.tuning.set_value("boss_every", 0.0)
+	var first: int = game.music_intensity()
+	_score_point(game, 0)
+	_score_point(game, 1)
+	_expect(game.music_intensity() == first + 2, "each game played should add a music layer (%d -> %d)" % [first, game.music_intensity()])
+	game.run.level = 7
+	game.start_round()
+	_expect(game.music_intensity() == first, "a new level starts the layers over")
+	game.free()
