@@ -3,7 +3,8 @@ extends RefCounted
 
 const SAVE_PATH := "user://tuning.cfg"
 
-## Each entry: key, menu label, default, min, max, step. A 0..1 range with step 1 is shown as ON/OFF.
+## Each entry: key, menu label, default, min, max, step. A 0..1 range with step 1 is shown as ON/OFF;
+## "labels" names the first values (the rest show as numbers).
 const DEFS := [
 	# Match structure
 	{"key": "points_per_game", "label": "POINTS PER GAME", "default": 3.0, "min": 1.0, "max": 21.0, "step": 1.0},
@@ -37,6 +38,27 @@ const DEFS := [
 	{"key": "burn_time", "label": "BURN TIME SEC", "default": 4.0, "min": 1.0, "max": 15.0, "step": 0.5},
 	{"key": "slime_time", "label": "SLIME TIME SEC", "default": 4.0, "min": 1.0, "max": 15.0, "step": 0.5},
 	{"key": "magnet_range", "label": "MAGNET RANGE", "default": 40.0, "min": 10.0, "max": 120.0, "step": 5.0},
+	# Wingmen (extra paddles) and turrets
+	{"key": "drone_hp", "label": "WINGMAN HP", "default": 2.0, "min": 1.0, "max": 10.0, "step": 1.0},
+	{"key": "drone_speed", "label": "WINGMAN PATROL SPEED", "default": 50.0, "min": 10.0, "max": 200.0, "step": 5.0},
+	{"key": "unit_hp", "label": "TURRET HP", "default": 2.0, "min": 1.0, "max": 10.0, "step": 1.0},
+	{"key": "unit_range", "label": "TURRET REACH", "default": 12.0, "min": 4.0, "max": 30.0, "step": 1.0},
+	{"key": "unit_respawn", "label": "TURRET REBUILD SEC", "default": 8.0, "min": 1.0, "max": 30.0, "step": 0.5},
+	# Shop and relics
+	{"key": "shop_every", "label": "SHOP EVERY N LEVELS", "default": 2.0, "min": 0.0, "max": 10.0, "step": 1.0},
+	{"key": "relic_price", "label": "RELIC PRICE %", "default": 100.0, "min": 10.0, "max": 300.0, "step": 10.0},
+	{"key": "split_chance", "label": "SPLITTER CHANCE %", "default": 15.0, "min": 0.0, "max": 100.0, "step": 5.0},
+	# Sound and music. Layers: OFF, AUTO (joins as levels rise) or always ON.
+	{"key": "sound", "label": "SOUND", "default": 1.0, "min": 0.0, "max": 1.0, "step": 1.0},
+	{"key": "music_volume", "label": "MUSIC VOLUME", "default": 60.0, "min": 0.0, "max": 100.0, "step": 5.0},
+	{"key": "music_bpm", "label": "MUSIC BASE BPM", "default": 84.0, "min": 50.0, "max": 180.0, "step": 2.0},
+	{"key": "music_bpm_lv", "label": "MUSIC BPM + PER LEVEL", "default": 4.0, "min": 0.0, "max": 20.0, "step": 1.0},
+	{"key": "music_intensity", "label": "MUSIC INTENSITY", "default": 0.0, "min": 0.0, "max": 8.0, "step": 1.0, "labels": ["AUTO"]},
+	{"key": "layer_pulse", "label": "LAYER LOW PULSE", "default": 1.0, "min": 0.0, "max": 2.0, "step": 1.0, "labels": ["OFF", "AUTO", "ON"]},
+	{"key": "layer_bass", "label": "LAYER BASS", "default": 1.0, "min": 0.0, "max": 2.0, "step": 1.0, "labels": ["OFF", "AUTO", "ON"]},
+	{"key": "layer_hats", "label": "LAYER NOISE HATS", "default": 1.0, "min": 0.0, "max": 2.0, "step": 1.0, "labels": ["OFF", "AUTO", "ON"]},
+	{"key": "layer_arp", "label": "LAYER ARPEGGIO", "default": 1.0, "min": 0.0, "max": 2.0, "step": 1.0, "labels": ["OFF", "AUTO", "ON"]},
+	{"key": "layer_lead", "label": "LAYER LEAD", "default": 1.0, "min": 0.0, "max": 2.0, "step": 1.0, "labels": ["OFF", "AUTO", "ON"]},
 	# Feel and controls
 	{"key": "hitstop", "label": "HITSTOP SEC", "default": 0.05, "min": 0.0, "max": 0.2, "step": 0.01},
 	{"key": "shake", "label": "SCREEN SHAKE", "default": 1.0, "min": 0.0, "max": 3.0, "step": 0.25},
@@ -74,6 +96,8 @@ func nudge(key: String, steps: int) -> void:
 func format(key: String) -> String:
 	var def: Dictionary = _def(key)
 	var v: float = get_value(key)
+	if def.has("labels") and int(v) < def.labels.size():
+		return def.labels[int(v)]
 	if def.min == 0.0 and def.max == 1.0 and def.step == 1.0:
 		return "ON" if v >= 1.0 else "OFF"
 	if def.step >= 1.0:

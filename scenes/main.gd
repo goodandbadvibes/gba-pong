@@ -1,8 +1,10 @@
 extends Node2D
 ## GBA-style roguelite Pong at 240x160.
 ## Point -> game (first to POINTS PER GAME) -> round (best of N games, one map node) -> run.
-## Win a round: pick an upgrade and move one node on the map. Lose one: the run ends, gems are banked.
-## Everything is drawn with flat rects from a small palette. Debug menu: F1, ` or tap the score.
+## Win a round: pick an upgrade, move one node on the map, and visit the relic shop every few levels.
+## Lose one: the run ends (gems are credited as they are earned). Wingmen patrol in front of a paddle
+## and turrets swat balls away; both have HP. Pause: Esc, P or the corner button. Debug: F1, ` or tap
+## the top center.
 
 const Palette := preload("res://scripts/palette.gd")
 const Tuning := preload("res://scripts/tuning.gd")
@@ -10,10 +12,12 @@ const PixelFont := preload("res://scripts/pixel_font.gd")
 const Ball := preload("res://scripts/ball.gd")
 const Run := preload("res://scripts/run.gd")
 const Upgrades := preload("res://scripts/upgrades.gd")
+const Relics := preload("res://scripts/relics.gd")
 const Screens := preload("res://scripts/screens.gd")
+const Music := preload("res://scripts/music.gd")
 
-enum State { TITLE, MAP, SERVE, PLAY, ROUND_END, UPGRADE, RUN_OVER }
-enum PowerUp { FAST_BALL, MULTI_BALL, BIG_PADDLE, FAST_PADDLE, SHRINK_FOE, SLOW_FOE }
+enum State { TITLE, MAP, SHOP, SERVE, PLAY, ROUND_END, UPGRADE, RUN_OVER }
+enum PowerUp { FAST_BALL, MULTI_BALL, BIG_PADDLE, FAST_PADDLE, SHRINK_FOE, SLOW_FOE, WINGMAN, TURRET }
 
 const W := 240
 const H := 160
@@ -30,6 +34,14 @@ const MULTI_SPREAD := 0.35
 const ROUND_END_TIME := 1.4
 const SCREEN_LOCK := 0.35
 const MAP_ANIM := Screens.MAP_ANIM
+const DRONE_W := 3
+const DRONE_H := 14
+const DRONE_LANES := 4
+const UNIT_SIZE := 6
+const UNIT_SLOTS_Y := [44.0, 116.0, 80.0, 30.0, 130.0]
+const UNIT_HIT_COOLDOWN := 0.3
+const MOMENTUM_STEP := 0.06
+const MOMENTUM_MAX := 10
 
 const BG := Palette.BG
 const BG_FLASH := Palette.BG_FLASH
@@ -54,6 +66,10 @@ const PU_INFO := {
 		"icon": ["10001", "01010", "00100", "01010", "10001"]},
 	PowerUp.SLOW_FOE: {"label": "SLOW FOE!", "color": Color8(168, 104, 248),
 		"icon": ["01010", "01010", "01010", "01010", "01010"]},
+	PowerUp.WINGMAN: {"label": "WINGMAN!", "color": Color8(152, 184, 248),
+		"icon": ["10100", "10101", "10101", "10101", "00101"]},
+	PowerUp.TURRET: {"label": "TURRET!", "color": Color8(248, 200, 72),
+		"icon": ["00100", "01110", "11011", "01110", "00100"]},
 }
 ## Timed paddle effects. size/speed are fixed multipliers; burn and slime are computed from upgrades.
 const EFFECT_INFO := {
@@ -73,6 +89,7 @@ var persist_tuning: bool = true:
 	set(value):
 		persist_tuning = value
 		run.persist = value
+var music: Music
 var state: State = State.TITLE
 var paddle_cy: Array[float] = [H / 2.0, H / 2.0]
 ## effects[side][name] = {"t": seconds left, "total": starting seconds}
@@ -86,6 +103,10 @@ var powerups: Array[Dictionary] = []
 var pu_timer: float = 0.0
 var gems: Array[Dictionary] = []
 var gem_timer: float = 0.0
+## Extra paddles: {side, x, y (center), dir, hp, max_hp, temp, flash}
+var drones: Array[Dictionary] = []
+## Turrets: {side, pos (center), hp, max_hp, alive, rebuild, hit_cd, temp, flash}
+var units: Array[Dictionary] = []
 
 # Round and screen flow
 var round_won: bool = false
@@ -94,8 +115,16 @@ var screen_lock: float = 0.0
 var map_anim: float = 0.0
 var offers: Array[String] = []
 var offer_index: int = 0
+var shop_offers: Array[String] = []
+var shop_index: int = 0
+var title_index: int = 0
 var run_result: Dictionary = {}
 var banner: String = ""
+
+# Pause menu
+var paused: bool = false
+var pause_index: int = 0
+var pause_view: String = "main"
 
 # Effects
 var hitstop: float = 0.0
@@ -124,7 +153,6 @@ var sfx := {}
 
 func _ready() -> void:
 	rng.randomize()
-	run.persist = persist_tuning
 	if persist_tuning:
 		tuning.load_saved()
 		run.load_saved()
@@ -137,11 +165,19 @@ func _ready() -> void:
 	sfx["gem"] = _make_blip(1760.0, 0.06)
 	sfx["win"] = _make_blip(1046.0, 0.25)
 	sfx["lose"] = _make_blip(131.0, 0.35)
+	sfx["break"] = _make_blip(165.0, 0.12)
+	sfx["zap"] = _make_blip(1480.0, 0.03)
+	music = Music.new()
+	music.tuning = tuning
+	add_child(music)
 
 
 func _process(delta: float) -> void:
 	blink += delta
-	if not menu_open:
+	AudioServer.set_bus_mute(0, tuning.get_value("sound") < 1.0)
+	if music:
+		music.play_for(music_intensity())
+	if not menu_open and not paused:
 		screen_lock = maxf(0.0, screen_lock - delta)
 		map_anim = maxf(0.0, map_anim - delta)
 		_screen_keys()
@@ -152,12 +188,26 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 
+## Music grows with the level: calm on the title, a step busier and faster each level, more for bosses.
+func music_intensity() -> int:
+	match state:
+		State.TITLE, State.RUN_OVER:
+			return 0
+	return run.level + (1 if is_boss() and in_round() else 0)
+
+
 func _screen_keys() -> void:
 	if screen_lock > 0.0:
 		return
 	var confirm: bool = Input.is_action_just_pressed("ui_accept") or Input.is_action_just_pressed("ui_up") \
 		or Input.is_action_just_pressed("ui_down")
 	match state:
+		State.TITLE:
+			if Input.is_action_just_pressed("ui_up") or Input.is_action_just_pressed("ui_down"):
+				title_index = wrapi(title_index + 1, 0, title_items().size())
+				_play("menu")
+			elif Input.is_action_just_pressed("ui_accept"):
+				title_choose(title_index)
 		State.UPGRADE:
 			if Input.is_action_just_pressed("ui_left"):
 				offer_index = wrapi(offer_index - 1, 0, offers.size())
@@ -167,22 +217,54 @@ func _screen_keys() -> void:
 				_play("menu")
 			elif Input.is_action_just_pressed("ui_accept"):
 				pick_upgrade(offer_index)
-		State.TITLE, State.MAP, State.RUN_OVER:
+		State.SHOP:
+			# The cards plus LEAVE as the last choice.
+			if Input.is_action_just_pressed("ui_left"):
+				shop_index = wrapi(shop_index - 1, 0, shop_offers.size() + 1)
+				_play("menu")
+			elif Input.is_action_just_pressed("ui_right"):
+				shop_index = wrapi(shop_index + 1, 0, shop_offers.size() + 1)
+				_play("menu")
+			elif Input.is_action_just_pressed("ui_accept"):
+				shop_choose(shop_index)
+		State.MAP, State.RUN_OVER:
 			if confirm:
 				_screen_confirm()
 
 
-## Advances from the title, map or run-over screen.
+## Advances from the map or run-over screen.
 func _screen_confirm() -> void:
 	match state:
-		State.TITLE:
-			start_run()
 		State.MAP:
-			if map_anim <= 0.0:
+			if map_anim > 0.0:
+				return
+			if run.shop_pending:
+				open_shop()
+			else:
 				start_round()
 		State.RUN_OVER:
 			state = State.TITLE
+			title_index = 0
 			screen_lock = SCREEN_LOCK
+
+
+func title_items() -> Array[Dictionary]:
+	var items: Array[Dictionary] = []
+	if run.can_continue():
+		items.append({"id": "continue", "label": "CONTINUE RUN  LEVEL %d" % int(run.suspended.get("level", 1))})
+	items.append({"id": "new", "label": "NEW RUN"})
+	return items
+
+
+func title_choose(index: int) -> void:
+	var items := title_items()
+	if index < 0 or index >= items.size():
+		return
+	if items[index].id == "continue":
+		run.resume()
+		_enter_map(false)
+	else:
+		start_run()
 
 
 func _input(event: InputEvent) -> void:
@@ -200,6 +282,12 @@ func _input(event: InputEvent) -> void:
 	elif menu_open:
 		_menu_key(key)
 		_consume()
+	elif paused:
+		_pause_key(key)
+		_consume()
+	elif (key.keycode == KEY_ESCAPE or key.keycode == KEY_P) and not key.echo and can_pause():
+		set_paused(true)
+		_consume()
 
 
 ## Marks the event handled. Guarded so tests can feed input to a node outside a viewport.
@@ -212,6 +300,7 @@ func _consume() -> void:
 # ---------------------------------------------------------------- touch
 
 const DEBUG_HOTSPOT := Rect2(W / 2 - 32, 0, 64, TOP)
+const PAUSE_BUTTON := Rect2(0, 0, 13, 13)
 const TOUCH_UP := Rect2(W - 64, TOP + 8, 30, 30)
 const TOUCH_DOWN := Rect2(W - 64, BOTTOM - 38, 30, 30)
 const MENU_BAR_H := 12
@@ -226,12 +315,16 @@ func in_round() -> bool:
 	return state == State.SERVE or state == State.PLAY
 
 
+func can_pause() -> bool:
+	return state in [State.MAP, State.SHOP, State.SERVE, State.PLAY, State.UPGRADE]
+
+
 ## Positions arrive in game pixels (240x160) because the viewport stretch transforms them.
 func _touch(event: InputEvent) -> void:
 	touch_seen = true
 	var drag := event as InputEventScreenDrag
 	if drag:
-		if drag.index == swipe_index and not menu_open:
+		if drag.index == swipe_index and not menu_open and not paused:
 			pending_swipe += drag.relative.y * tuning.get_value("swipe_speed")
 		return
 
@@ -244,13 +337,25 @@ func _touch(event: InputEvent) -> void:
 	if menu_open:
 		_menu_touch(touch.position)
 		return
+	if paused:
+		_pause_touch(touch.position)
+		return
 	if DEBUG_HOTSPOT.has_point(touch.position):
 		_toggle_menu()
+		return
+	if can_pause() and PAUSE_BUTTON.has_point(touch.position):
+		set_paused(true)
 		return
 	if screen_lock > 0.0 and not in_round():
 		return
 	match state:
-		State.TITLE, State.MAP, State.RUN_OVER:
+		State.TITLE:
+			var row: int = Screens.title_item_at(touch.position, title_items().size())
+			if row >= 0:
+				title_index = row
+				title_choose(row)
+			return
+		State.MAP, State.RUN_OVER:
 			_screen_confirm()
 			return
 		State.UPGRADE:
@@ -260,6 +365,16 @@ func _touch(event: InputEvent) -> void:
 					pick_upgrade(card)
 				else:
 					offer_index = card
+					_play("menu")
+			return
+		State.SHOP:
+			var choice: int = Screens.shop_choice_at(touch.position, shop_offers.size())
+			if choice >= 0:
+				if choice == shop_index or choice == shop_offers.size():
+					shop_index = choice
+					shop_choose(choice)
+				else:
+					shop_index = choice
 					_play("menu")
 			return
 		State.ROUND_END:
@@ -295,27 +410,132 @@ func _menu_touch(pos: Vector2) -> void:
 		_menu_action("ok")
 
 
+# ---------------------------------------------------------------- pause menu
+
+func pause_items() -> Array[Dictionary]:
+	var items: Array[Dictionary] = [
+		{"id": "resume", "label": "RESUME"},
+		{"id": "sound", "label": "SOUND: " + ("ON" if tuning.get_value("sound") >= 1.0 else "OFF")},
+		{"id": "relics", "label": "RELICS (%d)" % run.relics.size()},
+		{"id": "suspend", "label": "SUSPEND RUN"},
+		{"id": "menu", "label": "MAIN MENU (END RUN)"},
+	]
+	# Browsers can't close their own tab, so QUIT only exists on desktop builds.
+	if not OS.has_feature("web"):
+		items.append({"id": "quit", "label": "QUIT GAME"})
+	return items
+
+
+func set_paused(on: bool) -> void:
+	paused = on
+	pause_index = 0
+	pause_view = "main"
+	button_touches.clear()
+	swipe_index = -1
+	pending_swipe = 0.0
+	_play("menu")
+
+
+func _pause_key(key: InputEventKey) -> void:
+	if pause_view == "relics":
+		pause_view = "main"
+		_play("menu")
+		return
+	match key.keycode:
+		KEY_UP:
+			pause_index = wrapi(pause_index - 1, 0, pause_items().size())
+			_play("menu")
+		KEY_DOWN:
+			pause_index = wrapi(pause_index + 1, 0, pause_items().size())
+			_play("menu")
+		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
+			pause_choose(pause_index)
+		KEY_ESCAPE, KEY_P:
+			if not key.echo:
+				set_paused(false)
+
+
+func _pause_touch(pos: Vector2) -> void:
+	if pause_view == "relics":
+		pause_view = "main"
+		_play("menu")
+		return
+	var row: int = Screens.pause_item_at(pos, pause_items().size())
+	if row >= 0:
+		pause_index = row
+		pause_choose(row)
+
+
+func pause_choose(index: int) -> void:
+	var items := pause_items()
+	if index < 0 or index >= items.size():
+		return
+	match items[index].id:
+		"resume":
+			set_paused(false)
+		"sound":
+			tuning.set_value("sound", 0.0 if tuning.get_value("sound") >= 1.0 else 1.0)
+			if persist_tuning:
+				tuning.save()
+			_play("menu")
+		"relics":
+			pause_view = "relics"
+			_play("menu")
+		"suspend":
+			run.suspend()
+			_leave_to_title()
+		"menu":
+			run_result = run.finish()
+			_leave_to_title()
+		"quit":
+			run.suspend()
+			get_tree().quit()
+
+
+func _leave_to_title() -> void:
+	set_paused(false)
+	_clear_field()
+	state = State.TITLE
+	title_index = 0
+	screen_lock = SCREEN_LOCK
+
+
 # ---------------------------------------------------------------- run flow
 
 func start_run() -> void:
 	run.start()
-	state = State.MAP
-	map_anim = 0.0
-	screen_lock = SCREEN_LOCK
+	_enter_map(false)
 	_play("menu")
+
+
+func _clear_field() -> void:
+	balls.clear()
+	powerups.clear()
+	gems.clear()
+	drones.clear()
+	units.clear()
+	effects = [{}, {}]
 
 
 func start_round() -> void:
 	scores = [0, 0]
 	run.games.assign([0, 0])
-	effects = [{}, {}]
-	powerups.clear()
-	gems.clear()
+	_clear_field()
 	paddle_cy = [H / 2.0, H / 2.0]
 	pu_timer = _pu_interval()
 	gem_timer = _gem_interval()
 	serve_dir = 1 if rng.randf() < 0.5 else -1
+	for i in run.stack("turret"):
+		spawn_unit(0, false)
+	_refill_wingmen()
 	_begin_serve()
+
+
+## WINGMAN upgrade: every game starts with one patrolling paddle per level.
+func _refill_wingmen() -> void:
+	var have: int = drones.filter(func(d: Dictionary) -> bool: return d.side == 0 and not d.temp).size()
+	for i in run.stack("wingman") - have:
+		spawn_drone(0, false)
 
 
 func games_to_win() -> int:
@@ -341,6 +561,7 @@ func cpu_error() -> float:
 
 func _game_won(winner: int) -> void:
 	run.games[winner] += 1
+	run.streak = run.streak + 1 if winner == 0 else 0
 	scores = [0, 0]
 	balls.clear()
 	var color: Color = SIDE_COL[winner]
@@ -349,6 +570,7 @@ func _game_won(winner: int) -> void:
 	if run.games[winner] >= games_to_win():
 		_round_end(winner)
 	else:
+		_refill_wingmen()
 		_begin_serve(0.8)
 
 
@@ -356,30 +578,35 @@ func _round_end(winner: int) -> void:
 	state = State.ROUND_END
 	round_won = winner == 0
 	transition = ROUND_END_TIME
-	balls.clear()
-	powerups.clear()
-	gems.clear()
+	_clear_field()
 	_shake(4.0)
 	bg_flash = 0.12
 	if round_won:
-		run.clear_round(int(tuning.get_value("boss_every")))
+		run.clear_round(int(tuning.get_value("boss_every")), int(tuning.get_value("shop_every")))
 		_play("win")
 	else:
 		_play("lose")
 
 
 func _after_round() -> void:
+	screen_lock = SCREEN_LOCK
 	if round_won:
 		offers = Upgrades.offers(rng, run.stacks)
 		offer_index = 0
 		if offers.is_empty():
-			_enter_map()
+			_enter_map(true)
 		else:
 			state = State.UPGRADE
+	elif run.has_relic("second") and not run.second_wind_used:
+		# SECOND WIND: the run survives one lost round; replay the same level.
+		run.second_wind_used = true
+		run.streak = 0
+		run.save()
+		_enter_map(false)
+		_popup("SECOND WIND!", Vector2(W / 2.0, 110.0), Relics.DEFS.second.color, 1.5)
 	else:
 		run_result = run.finish()
 		state = State.RUN_OVER
-	screen_lock = SCREEN_LOCK
 
 
 func pick_upgrade(index: int) -> void:
@@ -387,13 +614,45 @@ func pick_upgrade(index: int) -> void:
 		return
 	run.add(offers[index])
 	_play("power")
-	_enter_map()
+	_enter_map(true)
 
 
-func _enter_map() -> void:
+func _enter_map(advanced: bool) -> void:
 	state = State.MAP
-	map_anim = MAP_ANIM
+	map_anim = MAP_ANIM if advanced else 0.0
 	screen_lock = SCREEN_LOCK
+
+
+func open_shop() -> void:
+	shop_offers = Relics.offers(rng, run.relics)
+	shop_index = 0
+	state = State.SHOP
+	screen_lock = SCREEN_LOCK
+	_play("menu")
+
+
+func relic_price(id: String) -> int:
+	return Relics.price(id, tuning.get_value("relic_price"))
+
+
+## Buys the relic at index, or leaves the shop when index is past the cards.
+func shop_choose(index: int) -> void:
+	if state != State.SHOP:
+		return
+	if index >= shop_offers.size():
+		run.shop_pending = false
+		run.save()
+		_enter_map(false)
+		_play("menu")
+		return
+	var id: String = shop_offers[index]
+	if run.buy(id, relic_price(id)):
+		_popup(Relics.DEFS[id].name + "!", Screens.card_rect(index, shop_offers.size()).get_center(), Relics.DEFS[id].color, 1.0)
+		_burst(Screens.card_rect(index, shop_offers.size()).get_center(), Vector2.ZERO, 20, Relics.DEFS[id].color)
+		_play("power")
+	else:
+		_shake(2.0)
+		_play("wall")
 
 
 # ---------------------------------------------------------------- simulation
@@ -418,6 +677,7 @@ func simulate(delta: float, dir: float) -> void:
 	pending_swipe = 0.0
 	_update_cpu(delta)
 	_tick_paddle_effects(delta)
+	_update_allies(delta)
 
 	if state == State.SERVE:
 		serve_timer -= delta
@@ -431,8 +691,14 @@ func simulate(delta: float, dir: float) -> void:
 			_move_ball(ball, delta)
 
 
+func momentum_factor(side: int) -> float:
+	if side != 0 or not run.has_relic("momentum"):
+		return 1.0
+	return 1.0 + MOMENTUM_STEP * mini(run.streak, MOMENTUM_MAX)
+
+
 func paddle_height(side: int) -> float:
-	var h: float = tuning.get_value("paddle_h")
+	var h: float = tuning.get_value("paddle_h") * momentum_factor(side)
 	if side == 0:
 		h *= 1.0 + 0.15 * run.stack("long")
 	for name in effects[side]:
@@ -447,7 +713,7 @@ func paddle_height(side: int) -> float:
 func paddle_speed(side: int) -> float:
 	var s: float
 	if side == 0:
-		s = tuning.get_value("player_speed") * (1.0 + 0.15 * run.stack("swift"))
+		s = tuning.get_value("player_speed") * (1.0 + 0.15 * run.stack("swift")) * momentum_factor(0)
 	else:
 		s = tuning.get_value("cpu_speed") * level_factor("cpu_lv")
 	for name in effects[side]:
@@ -458,13 +724,19 @@ func paddle_speed(side: int) -> float:
 	return s
 
 
+## VIRULENT relic: status effects last and hit 50% more.
+func status_boost() -> float:
+	return 1.5 if run.has_relic("virulent") else 1.0
+
+
 ## How much of the paddle a full burn takes away (more with more FLAME BALL levels).
 func burn_strength() -> float:
-	return minf(0.6, 0.3 + 0.1 * maxi(0, run.stack("flame") - 1))
+	return minf(0.8, (0.3 + 0.1 * maxi(0, run.stack("flame") - 1)) * status_boost())
 
 
 func slime_factor() -> float:
-	return maxf(0.3, 0.6 - 0.1 * maxi(0, run.stack("slime") - 1))
+	var slow: float = (0.4 + 0.1 * maxi(0, run.stack("slime") - 1)) * status_boost()
+	return maxf(0.2, 1.0 - slow)
 
 
 func paddle_top(side: int) -> float:
@@ -525,7 +797,7 @@ func _move_ball(ball: Ball, delta: float) -> void:
 			"vel": Vector2(rng.randf_range(-10, 10), -20.0 if ball.flame else 25.0), "life": 0.25, "color": col})
 
 
-## Handles walls, paddles, pickups and goals. Returns true when this ball's motion should stop.
+## Handles walls, paddles, wingmen, turrets, pickups and goals. Returns true when this ball's motion should stop.
 func _collide(ball: Ball) -> bool:
 	if ball.pos.y < TOP:
 		ball.pos.y = TOP
@@ -538,11 +810,15 @@ func _collide(ball: Ball) -> bool:
 
 	if ball.vel.x < 0.0 and _overlaps_paddle(ball, 0):
 		ball.pos.x = PADDLE_X[0] + PADDLE_W
-		_paddle_hit(ball, 0)
+		_deflect(ball, 0, paddle_cy[0], paddle_height(0) / 2.0, "paddle")
+		paddle_flash[0] = 0.1
 		return true
 	if ball.vel.x > 0.0 and _overlaps_paddle(ball, 1):
 		ball.pos.x = PADDLE_X[1] - BALL
-		_paddle_hit(ball, 1)
+		_deflect(ball, 1, paddle_cy[1], paddle_height(1) / 2.0, "paddle")
+		paddle_flash[1] = 0.1
+		return true
+	if _collide_drones(ball) or _collide_units(ball):
 		return true
 
 	_check_pickups(ball)
@@ -556,15 +832,22 @@ func _collide(ball: Ball) -> bool:
 	return false
 
 
+## Side whose goal a ball is heading for (0 player, 1 CPU).
+static func _heading_to(ball: Ball) -> int:
+	return 0 if ball.vel.x < 0.0 else 1
+
+
 func _overlaps_paddle(ball: Ball, side: int) -> bool:
 	var top: float = paddle_top(side)
 	return ball.pos.x < PADDLE_X[side] + PADDLE_W and ball.pos.x + BALL > PADDLE_X[side] \
 		and ball.pos.y < top + paddle_height(side) and ball.pos.y + BALL > top
 
 
-func _paddle_hit(ball: Ball, side: int) -> void:
-	var half: float = paddle_height(side) / 2.0
-	var offset: float = clampf((ball.pos.y + BALL / 2.0 - paddle_cy[side]) / half, -1.0, 1.0)
+## Sends a ball back toward the other side, angled by where it hit (center_y +- half).
+## source is "paddle", "drone" or "unit": the player's own paddle always applies upgrades,
+## wingmen need WING SYNC and turrets need HIVE MIND.
+func _deflect(ball: Ball, side: int, center_y: float, half: float, source: String) -> void:
+	var offset: float = clampf((ball.pos.y + BALL / 2.0 - center_y) / maxf(half, 1.0), -1.0, 1.0)
 	var top_speed: float = tuning.get_value("ball_max") * level_factor("ball_lv")
 	var speed: float = minf(ball.vel.length() + tuning.get_value("ball_accel"), maxf(top_speed, ball.vel.length()))
 	var angle: float = offset * deg_to_rad(tuning.get_value("bounce_angle"))
@@ -572,21 +855,24 @@ func _paddle_hit(ball: Ball, side: int) -> void:
 	var center: Vector2 = ball.pos + Vector2.ONE * BALL / 2.0
 
 	if side == 1:
-		# A burning or slimy ball hands its effect to the CPU paddle, then the CPU's return clears it.
+		# A burning or slimy ball hands its effect to the CPU, then the CPU's return clears it.
 		if ball.flame:
-			_add_effect(1, "burn", tuning.get_value("burn_time") + 0.5 * (run.stack("flame") - 1))
+			_add_effect(1, "burn", (tuning.get_value("burn_time") + 0.5 * (run.stack("flame") - 1)) * status_boost())
 			_popup("BURN!", center, upgrade_color("flame"))
 			_burst(center, Vector2(-1, 0), 14, upgrade_color("flame"))
 		if ball.slime:
-			_add_effect(1, "slime", tuning.get_value("slime_time") + 0.5 * (run.stack("slime") - 1))
+			_add_effect(1, "slime", (tuning.get_value("slime_time") + 0.5 * (run.stack("slime") - 1)) * status_boost())
 			_popup("SLIMED!", center + Vector2(0, 8), upgrade_color("slime"))
 			_burst(center, Vector2(-1, 0), 14, upgrade_color("slime"))
 		ball.flame = false
 		ball.slime = false
 	else:
-		speed *= 1.0 + 0.12 * run.stack("power")
-		ball.flame = run.stack("flame") > 0
-		ball.slime = run.stack("slime") > 0
+		var inherits: bool = source == "paddle" or (source == "drone" and run.has_relic("sync")) \
+			or (source == "unit" and run.has_relic("hive"))
+		if inherits:
+			speed *= 1.0 + 0.12 * run.stack("power")
+		ball.flame = inherits and run.stack("flame") > 0
+		ball.slime = inherits and run.stack("slime") > 0
 		var err: float = cpu_error()
 		cpu_aim_error = rng.randf_range(-err, err)
 
@@ -594,10 +880,28 @@ func _paddle_hit(ball: Ball, side: int) -> void:
 	ball.last_touch = side
 	ball.squash = 0.08
 	hitstop = tuning.get_value("hitstop")
-	_shake(2.0)
-	paddle_flash[side] = 0.1
+	_shake(2.0 if source == "paddle" else 1.0)
 	_burst(center, Vector2(dir_x, 0.0), 8, SPARK)
-	_play("paddle")
+	_play("paddle" if source != "unit" else "zap")
+
+	# SPLITTER: the player's paddle sometimes splits off an extra ball.
+	if side == 0 and source == "paddle" and run.has_relic("splitter") \
+			and rng.randf() * 100.0 < tuning.get_value("split_chance"):
+		_split_ball(ball, MULTI_SPREAD * (1.0 if rng.randf() < 0.5 else -1.0))
+		_popup("SPLIT!", center, Relics.DEFS.splitter.color)
+
+
+func _split_ball(ball: Ball, turn: float) -> bool:
+	if balls.size() >= int(tuning.get_value("max_balls")):
+		return false
+	var extra := Ball.new()
+	extra.pos = ball.pos
+	extra.vel = ball.vel.rotated(turn)
+	extra.last_touch = ball.last_touch
+	extra.flame = ball.flame
+	extra.slime = ball.slime
+	balls.append(extra)
+	return true
 
 
 func _wall_hit(ball: Ball) -> void:
@@ -620,6 +924,120 @@ func _goal(ball: Ball, scorer: int) -> void:
 		_game_won(scorer)
 	elif balls.is_empty():
 		_begin_serve()
+
+
+# ---------------------------------------------------------------- wingmen and turrets
+
+func _ally_hp(key: String, side: int) -> int:
+	return int(tuning.get_value(key)) + (1 if side == 0 and run.has_relic("plating") else 0)
+
+
+## Adds an extra paddle for side in the next free lane in front of its goal. temp ones come from power-ups.
+func spawn_drone(side: int, temp: bool) -> bool:
+	var used: Array = drones.filter(func(d: Dictionary) -> bool: return d.side == side).map(func(d: Dictionary) -> int: return d.lane)
+	var lane: int = -1
+	for i in DRONE_LANES:
+		if not used.has(i):
+			lane = i
+			break
+	if lane < 0:
+		return false
+	var x: float = 40.0 + 12.0 * lane if side == 0 else W - 40.0 - DRONE_W - 12.0 * lane
+	var hp: int = _ally_hp("drone_hp", side)
+	drones.append({"side": side, "lane": lane, "x": x, "y": rng.randf_range(TOP + 20.0, BOTTOM - 20.0),
+		"dir": 1.0 if rng.randf() < 0.5 else -1.0, "hp": hp, "max_hp": hp, "temp": temp, "flash": 0.0})
+	_burst(Vector2(x, H / 2.0), Vector2.ZERO, 8, PU_INFO[PowerUp.WINGMAN].color)
+	return true
+
+
+## Adds a turret for side in the next free slot. temp ones (power-ups) are not rebuilt when destroyed.
+func spawn_unit(side: int, temp: bool) -> bool:
+	var used: Array = units.filter(func(u: Dictionary) -> bool: return u.side == side).map(func(u: Dictionary) -> int: return u.slot)
+	var slot: int = -1
+	for i in UNIT_SLOTS_Y.size():
+		if not used.has(i):
+			slot = i
+			break
+	if slot < 0:
+		return false
+	var x: float = 72.0 if side == 0 else W - 72.0
+	var hp: int = _ally_hp("unit_hp", side)
+	units.append({"side": side, "slot": slot, "pos": Vector2(x, UNIT_SLOTS_Y[slot]), "hp": hp, "max_hp": hp,
+		"alive": true, "rebuild": 0.0, "hit_cd": 0.0, "temp": temp, "flash": 0.0})
+	_burst(Vector2(x, UNIT_SLOTS_Y[slot]), Vector2.ZERO, 8, PU_INFO[PowerUp.TURRET].color)
+	return true
+
+
+func _update_allies(delta: float) -> void:
+	var half: float = DRONE_H / 2.0
+	for d in drones:
+		d.flash = maxf(0.0, d.flash - delta)
+		d.y += d.dir * tuning.get_value("drone_speed") * delta
+		if d.y < TOP + half or d.y > BOTTOM - half:
+			d.y = clampf(d.y, TOP + half, BOTTOM - half)
+			d.dir = -d.dir
+	for u in units:
+		u.flash = maxf(0.0, u.flash - delta)
+		u.hit_cd = maxf(0.0, u.hit_cd - delta)
+		if not u.alive:
+			u.rebuild -= delta
+			if u.rebuild <= 0.0:
+				u.alive = true
+				u.hp = u.max_hp
+				_burst(u.pos, Vector2.ZERO, 10, PU_INFO[PowerUp.TURRET].color)
+				_popup("REBUILT", u.pos + Vector2(0, -8), MID, 0.6)
+
+
+func _collide_drones(ball: Ball) -> bool:
+	var side: int = _heading_to(ball)
+	for d in drones:
+		if d.side != side:
+			continue
+		var rect := Rect2(d.x, d.y - DRONE_H / 2.0, DRONE_W, DRONE_H)
+		if not rect.intersects(Rect2(ball.pos, Vector2(BALL, BALL))):
+			continue
+		ball.pos.x = rect.end.x if side == 0 else rect.position.x - BALL
+		_deflect(ball, side, d.y, DRONE_H / 2.0, "drone")
+		d.hp -= 1
+		d.flash = 0.12
+		if d.hp <= 0:
+			drones.erase(d)
+			_ally_destroyed(Vector2(d.x, d.y), "WINGMAN DOWN")
+		return true
+	return false
+
+
+func _collide_units(ball: Ball) -> bool:
+	var side: int = _heading_to(ball)
+	var reach: float = tuning.get_value("unit_range")
+	var center: Vector2 = ball.pos + Vector2.ONE * BALL / 2.0
+	for u in units:
+		if u.side != side or not u.alive or u.hit_cd > 0.0 or center.distance_to(u.pos) > reach:
+			continue
+		_deflect(ball, side, u.pos.y, reach, "unit")
+		u.hit_cd = UNIT_HIT_COOLDOWN
+		u.flash = 0.12
+		u.hp -= 1
+		# A short zap line from the turret to the ball.
+		for i in 6:
+			particles.append({"pos": u.pos.lerp(center, i / 5.0), "vel": Vector2.ZERO, "life": 0.12, "color": PU_INFO[PowerUp.TURRET].color})
+		if u.hp <= 0:
+			u.alive = false
+			_ally_destroyed(u.pos, "TURRET DOWN")
+			if u.temp:
+				units.erase(u)
+			else:
+				u.rebuild = tuning.get_value("unit_respawn") / (2.0 if side == 0 and run.has_relic("repair") else 1.0)
+		return true
+	return false
+
+
+func _ally_destroyed(at: Vector2, text: String) -> void:
+	_burst(at, Vector2.ZERO, 22, SPARK)
+	_burst(at, Vector2.ZERO, 12, Palette.BOSS)
+	_popup(text, at + Vector2(0, -8), MID, 0.8)
+	_shake(3.0)
+	_play("break")
 
 
 # ---------------------------------------------------------------- power-ups, gems, magnet
@@ -687,7 +1105,7 @@ func spawn_gem(at: Vector2 = Vector2(-1.0, -1.0)) -> void:
 
 
 func _random_field_spot(size: float) -> Vector2:
-	return Vector2(rng.randf_range(60.0, W - 60.0 - size), rng.randf_range(TOP + 10.0, BOTTOM - 10.0 - size))
+	return Vector2(rng.randf_range(80.0, W - 80.0 - size), rng.randf_range(TOP + 10.0, BOTTOM - 10.0 - size))
 
 
 ## Collision box for a pickup: POWER UP HITBOX around the item's center, bigger for the player's
@@ -715,7 +1133,7 @@ func _check_pickups(ball: Ball) -> void:
 	for i in range(gems.size() - 1, -1, -1):
 		if ball_rect.intersects(pickup_rect(gems[i].pos, GEM_SIZE, ball)):
 			var value: int = 1 + run.stack("lucky")
-			run.shards += value
+			run.add_shards(value)
 			_popup("+%d GEM" % value, gems[i].pos, GEM_COL)
 			_burst(gems[i].pos, Vector2.ZERO, 10, GEM_COL)
 			gems.remove_at(i)
@@ -732,16 +1150,8 @@ func apply_powerup(type: int, side: int, ball: Ball = null) -> void:
 				ball.vel *= 1.35
 		PowerUp.MULTI_BALL:
 			if ball:
-				for turn in [-MULTI_SPREAD, MULTI_SPREAD]:
-					if balls.size() >= int(tuning.get_value("max_balls")):
-						break
-					var extra := Ball.new()
-					extra.pos = ball.pos
-					extra.vel = ball.vel.rotated(turn)
-					extra.last_touch = ball.last_touch
-					extra.flame = ball.flame
-					extra.slime = ball.slime
-					balls.append(extra)
+				_split_ball(ball, -MULTI_SPREAD)
+				_split_ball(ball, MULTI_SPREAD)
 		PowerUp.BIG_PADDLE:
 			_add_effect(side, "big", duration)
 		PowerUp.FAST_PADDLE:
@@ -750,6 +1160,10 @@ func apply_powerup(type: int, side: int, ball: Ball = null) -> void:
 			_add_effect(foe, "small", duration)
 		PowerUp.SLOW_FOE:
 			_add_effect(foe, "slow", duration)
+		PowerUp.WINGMAN:
+			spawn_drone(side, true)
+		PowerUp.TURRET:
+			spawn_unit(side, true)
 	var color: Color = PU_INFO[type].color
 	var at: Vector2 = ball.pos if ball else Vector2(W / 2.0, H / 2.0)
 	_burst(at, Vector2.ZERO, 14, color)
@@ -827,8 +1241,12 @@ func _menu_items() -> Array[Dictionary]:
 		items.append({"kind": "value", "key": def.key, "label": def.label})
 	items.append({"kind": "win_round", "label": "WIN THIS ROUND NOW"})
 	items.append({"kind": "lose_round", "label": "LOSE THIS ROUND NOW"})
+	items.append({"kind": "shop", "label": "OPEN SHOP NOW"})
+	items.append({"kind": "gems", "label": "GIVE 20 GEMS"})
 	for id in Upgrades.DEFS:
 		items.append({"kind": "upgrade", "id": id, "label": "ADD UPGRADE " + Upgrades.DEFS[id].name})
+	for id in Relics.DEFS:
+		items.append({"kind": "relic", "id": id, "label": "ADD RELIC " + Relics.DEFS[id].name})
 	for type in PowerUp.values():
 		items.append({"kind": "spawn", "type": type, "label": "SPAWN " + PU_INFO[type].label.trim_suffix("!")})
 	items.append({"kind": "gem", "label": "SPAWN GEM SHARD"})
@@ -883,18 +1301,29 @@ func _menu_action(action: String, steps: int = 1) -> void:
 				tuning.nudge(item.key, steps if action == "inc" else -steps)
 		"ok":
 			match item.kind:
-				"spawn", "gem", "win_round", "lose_round":
+				"spawn", "gem", "win_round", "lose_round", "shop":
 					_toggle_menu()
 					if item.kind == "spawn":
 						spawn_powerup(item.type)
 					elif item.kind == "gem":
 						spawn_gem()
+					elif item.kind == "shop":
+						if state in [State.MAP, State.SERVE, State.PLAY]:
+							_clear_field()
+							run.shop_pending = true
+							open_shop()
 					elif in_round():
 						_round_end(0 if item.kind == "win_round" else 1)
 					return
+				"gems":
+					run.gems += 20
+					run.save()
 				"upgrade":
 					run.add(item.id)
 					_popup(Upgrades.DEFS[item.id].name + " LV %d" % run.stack(item.id), Vector2(W / 2.0, 30.0), Upgrades.DEFS[item.id].color)
+				"relic":
+					if not run.has_relic(item.id):
+						run.relics.append(item.id)
 				"reset":
 					tuning.reset()
 				"reset_save":
@@ -922,6 +1351,8 @@ func _draw() -> void:
 			Screens.draw_title(self)
 		State.MAP:
 			Screens.draw_map(self)
+		State.SHOP:
+			Screens.draw_shop(self)
 		State.UPGRADE:
 			Screens.draw_upgrade(self)
 		State.RUN_OVER:
@@ -939,8 +1370,17 @@ func _draw() -> void:
 		PixelFont.draw(self, popup.text, x, maxi(int(popup.pos.y), TOP + 1), 1, popup.color, PixelFont.Align.CENTER)
 
 	draw_set_transform(Vector2.ZERO)
+	if can_pause() and not paused:
+		_draw_pause_button()
+	if paused:
+		Screens.draw_pause(self)
 	if menu_open:
 		_draw_menu()
+
+
+func _draw_pause_button() -> void:
+	draw_rect(Rect2(3, 3, 2, 6), DIM)
+	draw_rect(Rect2(7, 3, 2, 6), DIM)
 
 
 func _draw_court() -> void:
@@ -965,6 +1405,10 @@ func _draw_court() -> void:
 	for pu in powerups:
 		if pu.life > 2.0 or fmod(pu.life, 0.2) > 0.1:
 			_draw_powerup(pu.type, pu.pos)
+	for u in units:
+		_draw_unit(u)
+	for d in drones:
+		_draw_drone(d)
 
 	for side in 2:
 		_draw_paddle(side)
@@ -985,6 +1429,40 @@ func _draw_court() -> void:
 			var color: Color = SIDE_COL[0] if round_won else SIDE_COL[1]
 			if fmod(transition, 0.3) > 0.08:
 				PixelFont.draw(self, text, W / 2, 62, 3, color, PixelFont.Align.CENTER)
+
+
+func _draw_drone(d: Dictionary) -> void:
+	var color: Color = WHITE if d.flash > 0.0 else SIDE_COL[d.side].lerp(PU_INFO[PowerUp.WINGMAN].color, 0.5)
+	var rect := Rect2(Vector2(d.x, d.y - DRONE_H / 2.0).round(), Vector2(DRONE_W, DRONE_H))
+	draw_rect(rect, color)
+	_draw_hp(Vector2(rect.position.x + DRONE_W / 2.0, rect.position.y - 3), d.hp, d.max_hp)
+
+
+func _draw_unit(u: Dictionary) -> void:
+	var color: Color = PU_INFO[PowerUp.TURRET].color if u.side == 0 else SIDE_COL[1]
+	var reach: float = tuning.get_value("unit_range")
+	if not u.alive:
+		# Rubble plus a bar that fills as it rebuilds.
+		var total: float = tuning.get_value("unit_respawn")
+		draw_rect(Rect2(u.pos - Vector2(2, -1), Vector2(4, 2)), DIM)
+		if not u.temp:
+			draw_rect(Rect2(u.pos.x - 3, u.pos.y + 5, ceilf(6.0 * (1.0 - clampf(u.rebuild / total, 0.0, 1.0))), 1), DIM)
+		return
+	# Dotted ring showing how far the turret reaches.
+	for i in 16:
+		var a: float = TAU * i / 16.0 + blink * 0.6
+		draw_rect(Rect2((u.pos + Vector2(cos(a), sin(a)) * reach).round(), Vector2.ONE), DIM)
+	var rect := Rect2((u.pos - Vector2.ONE * UNIT_SIZE / 2.0).round(), Vector2.ONE * UNIT_SIZE)
+	draw_rect(rect, WHITE if u.flash > 0.0 else color)
+	draw_rect(rect.grow(-2), BG)
+	_draw_hp(Vector2(u.pos.x, rect.position.y - 3), u.hp, u.max_hp)
+
+
+## A row of tiny pips, one per hit point left.
+func _draw_hp(center_top: Vector2, hp: int, max_hp: int) -> void:
+	var x: float = roundf(center_top.x - (max_hp * 2 - 1) / 2.0)
+	for i in max_hp:
+		draw_rect(Rect2(x + i * 2, center_top.y, 1, 1), SPARK if i < hp else DIM)
 
 
 ## Games won this round as small squares beside each score.
@@ -1089,9 +1567,9 @@ func draw_icon(rows: Array, pos: Vector2, color: Color, scale: int = 1) -> void:
 				draw_rect(Rect2(pos.x + col * scale, pos.y + row * scale, scale, scale), color)
 
 
-## Small icons with time bars in the HUD for each active paddle effect.
+## Small icons with time bars in the HUD for each active paddle effect (left side starts after the pause button).
 func _draw_effect_icons(side: int) -> void:
-	var x: int = 4 if side == 0 else W - 9
+	var x: int = 16 if side == 0 else W - 9
 	var step: int = 8 if side == 0 else -8
 	for name in effects[side]:
 		var color: Color = effect_color(name)
@@ -1133,6 +1611,8 @@ func _draw_menu() -> void:
 			label_color = PU_INFO[item.type].color
 		elif selected and item.kind == "upgrade":
 			label_color = Upgrades.DEFS[item.id].color
+		elif selected and item.kind == "relic":
+			label_color = Relics.DEFS[item.id].color
 		PixelFont.draw(self, item.label, 9, y, 1, label_color)
 		if item.kind == "value":
 			var text: String = tuning.format(item.key)
@@ -1141,6 +1621,10 @@ func _draw_menu() -> void:
 			PixelFont.draw(self, text, W - 4, y, 1, SIDE_COL[0] if selected else color, PixelFont.Align.RIGHT)
 		elif item.kind == "upgrade":
 			PixelFont.draw(self, "LV %d" % run.stack(item.id), W - 4, y, 1, color, PixelFont.Align.RIGHT)
+		elif item.kind == "relic":
+			PixelFont.draw(self, "OWNED" if run.has_relic(item.id) else "-", W - 4, y, 1, color, PixelFont.Align.RIGHT)
+		elif item.kind == "gems":
+			PixelFont.draw(self, str(run.gems), W - 4, y, 1, GEM_COL, PixelFont.Align.RIGHT)
 
 	if touch_seen:
 		# Tappable button bar instead of the keyboard hint.
@@ -1183,4 +1667,3 @@ func _play(name: String) -> void:
 	var player: AudioStreamPlayer = sfx.get(name)
 	if player and player.is_inside_tree():
 		player.play()
-

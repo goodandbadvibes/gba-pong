@@ -7,9 +7,9 @@ a 3x5 pixel font and square-wave blips. Made with Godot 4.7.2.
 
 **How a run works:** points win a *game* (first to 3), games win a *round* (best of 5), and
 each round is one node on the map. Win a round to pick one of three upgrades and move to the next
-node; lose one and the run is over. Opponents get faster and aim better every level, and every 5th
-level is a boss. When a run ends you earn gems (2 per round cleared, 5 per boss, plus gem shards you
-collected), and your best run is saved.
+node; lose one and the run is over. Every 2 levels the map stops at a **relic shop**. Opponents get faster and aim better every level, and every 5th
+level is a boss. You earn gems as you go (2 per round cleared, 5 per boss, plus gem shards you collect) and
+spend them on relics. Your best run and gems are saved, and a run can be suspended and continued.
 
 **Controls:** Up / Down arrows (or a gamepad d-pad); Left / Right and Enter on the upgrade screen.
 On a phone or tablet, swipe anywhere to move your paddle and tap to continue; on the upgrade screen
@@ -28,12 +28,43 @@ buttons.
 | POWER HIT | balls you hit fly 12% faster per level |
 | LUCKY FIND | more power-ups and gem shards, shards worth more |
 | BIG GRAB | your balls collect things from further away |
+| WINGMAN | every game starts with an extra paddle per level that patrols up and down in front of yours |
+| TURRET | a turret per level guards your side and swats balls that come close; it rebuilds after a cooldown |
+
+**Wingmen and turrets** have HP (2 hits by default); every ball they hit costs one. Wingmen
+patrol on their own; turrets stay put and hit balls within reach, with the same effect as a
+paddle hit. The WINGMAN and TURRET power-ups give either side a one-off wingman or turret.
+
+**Relics** (shop, once per run each):
+
+| Relic | Effect |
+|---|---|
+| HIVE MIND | your turrets use your upgrades (flame, slime, power hit) |
+| WING SYNC | your wingmen use your upgrades |
+| VIRULENT | burn and slime last 50% longer and hit 50% harder |
+| SPLITTER | each paddle hit has a chance to split off an extra ball |
+| MOMENTUM | +6% paddle size and speed per game won in a row; losing a game resets it |
+| THICK PLATING | your wingmen and turrets take one more hit |
+| QUICK REPAIR | destroyed turrets rebuild twice as fast |
+| SECOND WIND | once per run, a lost round does not end the run |
+| GEM TITHE | +2 gems for every round cleared |
+
+**Pause:** Esc, P or the II button in the top-left corner. Resume, sound on/off, view your relics,
+suspend the run (continue it from the title), end the run and go to the main menu, or quit
+(desktop only). Relics are also shown on the map.
+
+**Music** is generated in code with GBA-style channels (two pulse waves, a 4-bit wave bass and
+LFSR noise, 8-bit at 16 kHz). It starts as a low pulse and gets faster with more layers every
+level. The debug menu sets volume, base tempo, tempo per level, a fixed intensity and each layer
+(OFF / AUTO / ON).
 
 **Power-ups** spawn mid-court and go to whoever touched the ball that collects them last (a freshly
 served ball collects nothing). Gem shards only count for balls you hit.
 
 | Icon color | Power-up | Effect |
 |---|---|---|
+| periwinkle | WINGMAN | a one-off extra paddle for the collector |
+| gold | TURRET | a one-off turret for the collector |
 | yellow | FAST BALL | that ball speeds up 35% |
 | white | MULTI BALL | two extra balls split off it |
 | green | BIG PADDLE | collector paddle 1.5x taller |
@@ -77,6 +108,6 @@ godot --headless --path . -s res://test/test_rules.gd   # rule tests
 ```
 
 Game code: `scenes/main.gd` (court, rounds, power-ups, upgrades in play, debug menu),
-`scripts/screens.gd` (title, map, upgrade and run-over screens), `scripts/run.gd` (run progress
-and saved best/gems), `scripts/upgrades.gd`, `scripts/tuning.gd` (every tunable value),
+`scripts/screens.gd` (title, map, upgrade, shop, run-over and pause screens), `scripts/run.gd` (run
+progress, save, suspend), `scripts/upgrades.gd`, `scripts/relics.gd`, `scripts/music.gd`, `scripts/tuning.gd` (every tunable value),
 `scripts/pixel_font.gd`, `scripts/palette.gd`, `scripts/ball.gd`.

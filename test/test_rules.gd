@@ -35,6 +35,25 @@ func _initialize() -> void:
 	_test_gems_only_for_player()
 	_test_power_hit()
 	_test_offers_skip_maxed()
+	# Wingmen and turrets
+	_test_wingman_powerup_blocks_and_breaks()
+	_test_wingman_patrols()
+	_test_turret_hits_breaks_and_rebuilds()
+	_test_temp_turret_is_not_rebuilt()
+	_test_wingman_and_turret_upgrades_spawn()
+	# Relics, shop, pause, suspend
+	_test_hive_and_sync_pass_on_upgrades()
+	_test_virulent_strengthens_status()
+	_test_splitter()
+	_test_momentum_streak()
+	_test_second_wind()
+	_test_shop_flow_and_tithe()
+	_test_pause_blocks_play_and_toggles_sound()
+	_test_suspend_and_continue()
+	_test_main_menu_ends_run()
+	# Music
+	_test_music_layers_and_tempo()
+	_test_music_renders_a_loop()
 	# Touch
 	_test_tap_flow_title_map_round()
 	_test_swipe_moves_paddle()
@@ -287,7 +306,7 @@ func _test_round_loss_ends_run_and_banks_gems() -> void:
 		_step(game, 120)
 		game.pick_upgrade(0)
 		game.start_round()
-	game.run.shards = 3
+	game.run.add_shards(3)
 	_score_point(game, 1)
 	_step(game, 120)
 	_expect(game.state == game.State.RUN_OVER, "losing a round should end the run")
@@ -439,8 +458,8 @@ func _drag(game: Node2D, pos: Vector2, relative: Vector2, index: int = 0) -> voi
 
 func _test_tap_flow_title_map_round() -> void:
 	var game := _new_game()
-	_touch(game, Vector2(60.0, 100.0), true)
-	_expect(game.state == game.State.MAP, "a tap on the title should start a run on the map")
+	_touch(game, Vector2(120.0, 90.0), true)
+	_expect(game.state == game.State.MAP, "tapping NEW RUN on the title should start a run on the map")
 	game.screen_lock = 0.0
 	_touch(game, Vector2(60.0, 100.0), true)
 	_expect(game.state == game.State.SERVE, "a tap on the map should start the round")
@@ -522,3 +541,297 @@ func _test_upgrade_cards_by_touch() -> void:
 	_touch(game, second, true)
 	_expect(game.state == game.State.MAP and game.run.stack(picked) == 1, "a second tap should take it")
 	game.free()
+
+
+# ---------------------------------------------------------------- wingmen and turrets
+
+func _test_wingman_powerup_blocks_and_breaks() -> void:
+	var game := _game()
+	game.tuning.set_value("drone_hp", 2.0)
+	game.tuning.set_value("drone_speed", 10.0)
+	game.apply_powerup(game.PowerUp.WINGMAN, 0)
+	_expect(game.drones.size() == 1 and game.drones[0].temp, "the WINGMAN power-up should add a temporary wingman")
+	var d: Dictionary = game.drones[0]
+	for hit in 2:
+		d.y = 80.0
+		var ball := _playing(game, Vector2(d.x + 8.0, 78.0), Vector2(-150.0, 0.0))
+		game.hitstop = 0.0
+		_step(game, 4)
+		_expect(ball.vel.x > 0.0 and ball.last_touch == 0, "hit %d: the wingman should send the ball back for the player" % (hit + 1))
+	_expect(game.drones.is_empty(), "two hits should destroy a 2 HP wingman")
+	game.free()
+
+
+func _test_wingman_patrols() -> void:
+	var game := _game()
+	game.spawn_drone(0, false)
+	var d: Dictionary = game.drones[0]
+	var ys: Array[float] = []
+	for i in 300:
+		game.simulate(1.0 / 60.0, 0.0)
+		ys.append(d.y)
+	_expect(ys.max() - ys.min() > 40.0, "a wingman should patrol up and down")
+	_expect(ys.min() >= game.TOP + game.DRONE_H / 2.0 - 0.01 and ys.max() <= game.BOTTOM - game.DRONE_H / 2.0 + 0.01, "a wingman should stay on the court")
+	game.free()
+
+
+func _test_turret_hits_breaks_and_rebuilds() -> void:
+	var game := _game()
+	game.tuning.set_value("unit_hp", 2.0)
+	game.tuning.set_value("unit_respawn", 2.0)
+	game.spawn_unit(0, false)
+	var u: Dictionary = game.units[0]
+	for hit in 2:
+		u.hit_cd = 0.0
+		game.hitstop = 0.0
+		var ball := _playing(game, u.pos + Vector2(20.0, -2.0), Vector2(-150.0, 0.0))
+		_step(game, 6)
+		_expect(ball.vel.x > 0.0 and ball.last_touch == 0, "hit %d: the turret should hit the ball back" % (hit + 1))
+	_expect(not u.alive and u.rebuild > 0.0, "two hits should destroy a 2 HP turret")
+	game.balls.clear()
+	game.state = game.State.SERVE
+	game.serve_timer = 10.0
+	_step(game, 150)
+	_expect(u.alive and u.hp == u.max_hp, "the turret should rebuild after its cooldown")
+	game.free()
+
+
+func _test_temp_turret_is_not_rebuilt() -> void:
+	var game := _game()
+	game.tuning.set_value("unit_hp", 1.0)
+	game.apply_powerup(game.PowerUp.TURRET, 0)
+	var u: Dictionary = game.units[0]
+	_playing(game, u.pos + Vector2(20.0, 0.0), Vector2(-150.0, 0.0))
+	game.hitstop = 0.0
+	_step(game, 6)
+	_expect(game.units.is_empty(), "a turret from a power-up should be gone for good once destroyed")
+	game.free()
+
+
+func _test_wingman_and_turret_upgrades_spawn() -> void:
+	var game := _game()
+	game.run.add("wingman")
+	game.run.add("wingman")
+	game.run.add("turret")
+	game.start_round()
+	_expect(game.drones.filter(func(d): return d.side == 0).size() == 2, "WINGMAN level 2 should start the round with 2 wingmen")
+	_expect(game.units.size() == 1 and not game.units[0].temp, "TURRET should place a lasting turret")
+	game.drones.clear()
+	game.tuning.set_value("points_per_game", 1.0)
+	_score_point(game, 0)
+	_expect(game.drones.size() == 2, "wingmen should be back for the next game")
+	game.free()
+
+
+# ---------------------------------------------------------------- relics, shop, pause
+
+func _test_hive_and_sync_pass_on_upgrades() -> void:
+	for relic in ["", "hive"]:
+		var game := _game()
+		game.run.add("flame")
+		if relic != "":
+			game.run.relics.append(relic)
+		game.spawn_unit(0, false)
+		var u: Dictionary = game.units[0]
+		var ball := _playing(game, u.pos + Vector2(20.0, 0.0), Vector2(-150.0, 0.0))
+		_step(game, 6)
+		_expect(ball.flame == (relic == "hive"), "turret hit with relic [%s]: flame=%s" % [relic, ball.flame])
+		game.free()
+	for relic in ["", "sync"]:
+		var game := _game()
+		game.run.add("flame")
+		if relic != "":
+			game.run.relics.append(relic)
+		game.tuning.set_value("drone_speed", 10.0)
+		game.spawn_drone(0, false)
+		var d: Dictionary = game.drones[0]
+		d.y = 80.0
+		var ball := _playing(game, Vector2(d.x + 8.0, 78.0), Vector2(-150.0, 0.0))
+		_step(game, 4)
+		_expect(ball.flame == (relic == "sync"), "wingman hit with relic [%s]: flame=%s" % [relic, ball.flame])
+		game.free()
+
+
+func _test_virulent_strengthens_status() -> void:
+	var game := _game()
+	game.run.add("flame")
+	game.run.add("slime")
+	var burn: float = game.burn_strength()
+	var slime: float = game.slime_factor()
+	game.run.relics.append("virulent")
+	_expect(game.burn_strength() > burn and game.slime_factor() < slime, "VIRULENT should make burn and slime stronger")
+	game.free()
+
+
+func _test_splitter() -> void:
+	var game := _game()
+	game.run.relics.append("splitter")
+	game.tuning.set_value("split_chance", 100.0)
+	game.paddle_cy[0] = 72.0
+	_playing(game, Vector2(14.0, 70.0), Vector2(-120.0, 0.0))
+	_step(game, 3)
+	_expect(game.balls.size() == 2, "SPLITTER at 100%% should split a ball off every paddle hit, got %d" % game.balls.size())
+	game.free()
+
+
+func _test_momentum_streak() -> void:
+	var game := _game()
+	game.tuning.set_value("points_per_game", 1.0)
+	game.tuning.set_value("best_of", 9.0)
+	var base: float = game.paddle_height(0)
+	game.run.relics.append("momentum")
+	_score_point(game, 0)
+	_score_point(game, 0)
+	_expect(game.run.streak == 2 and game.paddle_height(0) > base, "MOMENTUM should grow the paddle with each game won in a row")
+	_score_point(game, 1)
+	_expect(game.run.streak == 0 and game.paddle_height(0) == base, "losing a game should reset MOMENTUM")
+	game.free()
+
+
+func _test_second_wind() -> void:
+	var game := _game()
+	game.tuning.set_value("points_per_game", 1.0)
+	game.tuning.set_value("best_of", 1.0)
+	game.run.relics.append("second")
+	_score_point(game, 1)
+	_step(game, 120)
+	_expect(game.state == game.State.MAP and game.run.second_wind_used and game.run.level == 1, "SECOND WIND should save the run once")
+	game.start_round()
+	_score_point(game, 1)
+	_step(game, 120)
+	_expect(game.state == game.State.RUN_OVER, "the second lost round should end the run")
+	game.free()
+
+
+func _test_shop_flow_and_tithe() -> void:
+	var game := _game()
+	game.tuning.set_value("points_per_game", 1.0)
+	game.tuning.set_value("best_of", 1.0)
+	game.tuning.set_value("shop_every", 2.0)
+	game.tuning.set_value("boss_every", 0.0)
+	game.run.gems = 0
+	game.run.relics.append("tithe")
+	for i in 2:
+		game.start_round()
+		_score_point(game, 0)
+		_step(game, 120)
+		game.pick_upgrade(0)
+	_expect(game.run.gems == 8, "two rounds with GEM TITHE should give 2x(2+2) gems, got %d" % game.run.gems)
+	_expect(game.run.shop_pending, "the shop should open after 2 levels")
+	game.map_anim = 0.0
+	game.screen_lock = 0.0
+	game._screen_confirm()
+	_expect(game.state == game.State.SHOP and game.shop_offers.size() == 3, "confirming the map should enter the shop")
+	var expensive: String = ""
+	for id in game.shop_offers:
+		if game.relic_price(id) > 8:
+			expensive = id
+	if expensive != "":
+		game.shop_choose(game.shop_offers.find(expensive))
+		_expect(not game.run.has_relic(expensive) and game.run.gems == 8, "a relic that costs more than you have should not be bought")
+	game.run.gems = 100
+	var id: String = game.shop_offers[0]
+	game.shop_choose(0)
+	_expect(game.run.has_relic(id) and game.run.gems == 100 - game.relic_price(id), "buying should take the relic and its price")
+	game.shop_choose(game.shop_offers.size())
+	_expect(game.state == game.State.MAP and not game.run.shop_pending, "LEAVE should go back to the map")
+	game.map_anim = 0.0
+	game._screen_confirm()
+	_expect(game.state == game.State.SERVE, "after the shop the map should start the next round")
+	game.free()
+
+
+func _pause_id(game: Node2D, id: String) -> int:
+	var items: Array = game.pause_items()
+	for i in items.size():
+		if items[i].id == id:
+			return i
+	return -1
+
+
+func _test_pause_blocks_play_and_toggles_sound() -> void:
+	var game := _game()
+	game.set_paused(true)
+	game.paddle_cy[0] = 80.0
+	game.button_touches[5] = 1.0
+	game._process(0.1)
+	_expect(game.paddle_cy[0] == 80.0, "nothing should move while paused")
+	var sound: float = game.tuning.get_value("sound")
+	game.pause_choose(_pause_id(game, "sound"))
+	_expect(game.tuning.get_value("sound") != sound, "the SOUND item should toggle sound")
+	game.pause_choose(_pause_id(game, "resume"))
+	_expect(not game.paused, "RESUME should unpause")
+	AudioServer.set_bus_mute(0, false)
+	game.free()
+
+
+func _test_suspend_and_continue() -> void:
+	var game := _game()
+	game.run.level = 4
+	game.run.cleared = 3
+	game.run.add("magnet")
+	game.run.relics.append("splitter")
+	game.set_paused(true)
+	game.pause_choose(_pause_id(game, "suspend"))
+	_expect(game.state == game.State.TITLE and game.run.can_continue(), "SUSPEND should return to the title with a run to continue")
+	_expect(game.title_items()[0].id == "continue", "the title should offer CONTINUE first")
+	game.run.level = 1
+	game.run.relics.clear()
+	game.title_choose(0)
+	_expect(game.state == game.State.MAP and game.run.level == 4 and game.run.stack("magnet") == 1 and game.run.has_relic("splitter"), "CONTINUE should restore the suspended run")
+	_expect(not game.run.can_continue(), "a continued run should no longer be suspended")
+	game.free()
+
+
+func _test_main_menu_ends_run() -> void:
+	var game := _game()
+	game.run.cleared = 2
+	game.run.best_cleared = 0
+	game.set_paused(true)
+	game.pause_choose(_pause_id(game, "menu"))
+	_expect(game.state == game.State.TITLE and not game.run.can_continue() and game.run.best_cleared == 2, "MAIN MENU should end the run and keep the best")
+	game.free()
+
+
+# ---------------------------------------------------------------- music
+
+func _music() -> Node:
+	var Music: GDScript = load("res://scripts/music.gd")
+	var Tuning: GDScript = load("res://scripts/tuning.gd")
+	var music: Node = Music.new()
+	music.tuning = Tuning.new()
+	root.add_child(music)
+	return music
+
+
+func _test_music_layers_and_tempo() -> void:
+	var music := _music()
+	_expect(music.active_layers(0) == ["pulse"], "the title should only have the low pulse, got %s" % [music.active_layers(0)])
+	_expect(music.active_layers(1) == ["pulse", "bass"], "level 1 adds bass")
+	_expect(music.active_layers(4).size() == 5, "level 4 has all five layers")
+	_expect(music.bpm_for(5) > music.bpm_for(1), "the beat should speed up with the level")
+	music.tuning.set_value("layer_lead", 2.0)
+	music.tuning.set_value("layer_bass", 0.0)
+	_expect(music.active_layers(0) == ["pulse", "lead"], "ON forces a layer in and OFF keeps it out, got %s" % [music.active_layers(0)])
+	music.tuning.set_value("music_intensity", 6.0)
+	_expect(music.effective_intensity(1) == 6, "a set MUSIC INTENSITY overrides the level")
+	music.free()
+
+
+func _test_music_renders_a_loop() -> void:
+	var music := _music()
+	var wav: AudioStreamWAV = music.render_now(4)
+	var expected: int = music.loop_samples(music.bpm_for(4))
+	_expect(wav != null and wav.data.size() == expected and wav.loop_end == expected, "the loop should be exactly two bars long")
+	_expect(wav.loop_mode == AudioStreamWAV.LOOP_FORWARD and wav.format == AudioStreamWAV.FORMAT_8_BITS, "the loop should be 8-bit and looping")
+	var loud: int = 0
+	for i in range(0, wav.data.size(), 97):
+		var v: int = wav.data[i]
+		if v > 127:
+			v -= 256
+		if absi(v) > 4:
+			loud += 1
+	_expect(loud > 50, "the loop should not be silent")
+	var calm: AudioStreamWAV = music.render_now(1)
+	_expect(calm.data.size() > wav.data.size(), "a calmer level should loop slower (longer)")
+	music.free()
