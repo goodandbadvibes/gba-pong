@@ -3,7 +3,7 @@
 Pong at Game Boy Advance limits: 240x160, integer-scaled pixels, a small 15-bit palette,
 a 3x5 pixel font and square-wave blips. Made with Godot 4.7.2.
 
-**Play online:** https://tuomassoukka-prog.github.io/gba-pong/
+**Play online:** https://goodandbadvibes.github.io/gba-pong/
 
 **How a run works:** points win a *game* (first to 3), games win a *round* (best of 5), and
 each round is one node on the map. A run starts with a free pick of one of three upgrades. Win a
