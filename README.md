@@ -6,9 +6,10 @@ a 3x5 pixel font and square-wave blips. Made with Godot 4.7.2.
 **Play online:** https://tuomassoukka-prog.github.io/gba-pong/
 
 **How a run works:** points win a *game* (first to 3), games win a *round* (best of 5), and
-each round is one node on the map. Win a round to pick one of three upgrades and move to the next
-node; lose one and the run is over. Every 2 levels the map stops at a **relic shop**. Opponents get faster and aim better every level, and every 5th
-level is a boss. You earn gems as you go (2 per round cleared, 5 per boss, plus gem shards you collect) and
+each round is one node on the map. A run starts with a free pick of one of three upgrades. Win a
+round to pick another and move to the next
+node; lose one and the run is over. Every 2 levels the map stops at a **relic shop**. Opponents get faster and aim better every level, gain one random upgrade per level after the
+first (their burn, slime and poison hit you too), and every 5th level is a boss. You earn gems as you go (2 per round cleared, 5 per boss, plus gem shards you collect) and
 spend them on relics. Your best run and gems are saved, and a run can be suspended and continued.
 
 **Controls:** Up / Down arrows (or a gamepad d-pad); Left / Right and Enter on the upgrade screen.
@@ -29,6 +30,8 @@ buttons.
 | LUCKY FIND | more power-ups and gem shards, shards worth more |
 | BIG GRAB | your balls collect things from further away |
 | WINGMAN | every game starts with an extra paddle per level that patrols up and down in front of yours |
+| VENOM BALL | balls you hit are poisonous; enough poison freezes the foe paddle for a second and costs its wingmen and turrets 1 HP |
+| OVERCHARGE | every game starts with a booster, 2 seconds per level |
 | TURRET | a turret per level guards your side and swats balls that come close; it rebuilds after a cooldown |
 
 **Wingmen and turrets** have HP (2 hits by default); every ball they hit costs one. Wingmen
@@ -54,15 +57,19 @@ suspend the run (continue it from the title), end the run and go to the main men
 (desktop only). Relics are also shown on the map.
 
 **Music** is generated in code with GBA-style channels (two pulse waves, a 4-bit wave bass and
-LFSR noise, 8-bit at 16 kHz). It starts as a low pulse and gets faster with more layers every
-level. The debug menu sets volume, base tempo, tempo per level, a fixed intensity and each layer
+LFSR noise, 8-bit at 16 kHz). It starts as a low pulse and gets more layers every level; the tempo
+rises each level and again with every game inside a level. The map and upgrade screens have
+their own calm track and the shop a bouncy one. The debug menu sets volume, base tempo, tempo per level, a fixed intensity and each layer
 (OFF / AUTO / ON).
 
 **Power-ups** spawn mid-court and go to whoever touched the ball that collects them last (a freshly
-served ball collects nothing). Gem shards only count for balls you hit.
+served ball collects nothing). Gem shards only count for balls you hit. After 30 seconds in a round, power-ups start
+coming twice as often (both tunable).
 
 | Icon color | Power-up | Effect |
 |---|---|---|
+| purple | POISON | 4 poison on the collector's foe |
+| pale yellow | BOOSTER | for 6 seconds all the collector's modifiers work 1.5x as hard |
 | periwinkle | WINGMAN | a one-off extra paddle for the collector |
 | gold | TURRET | a one-off turret for the collector |
 | yellow | FAST BALL | that ball speeds up 35% |

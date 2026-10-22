@@ -1,5 +1,6 @@
 extends RefCounted
-## Roguelite upgrades offered after each round won. They last for the whole run and stack up to "max".
+## Roguelite upgrades: one to start each run, then one after each round won. They last for the whole
+## run and stack up to "max". The CPU also gains one per level (CPU_EXCLUDED ones never).
 
 const DEFS := {
 	"flame": {"name": "FLAME BALL", "max": 3, "color": Color8(248, 128, 32),
@@ -29,17 +30,27 @@ const DEFS := {
 	"wingman": {"name": "WINGMAN", "max": 3, "color": Color8(152, 184, 248),
 		"desc": "EVERY GAME STARTS WITH AN EXTRA PADDLE PER LEVEL THAT PATROLS ON ITS OWN.",
 		"icon": ["10100", "10101", "10101", "10101", "00101"]},
+	"venom": {"name": "VENOM BALL", "max": 3, "color": Color8(176, 96, 248),
+		"desc": "BALLS YOU HIT ARE POISONOUS. ENOUGH POISON FREEZES THE FOE PADDLE AND HURTS ITS WINGMEN AND TURRETS.",
+		"icon": ["01110", "10101", "11111", "01110", "01010"]},
+	"overcharge": {"name": "OVERCHARGE", "max": 3, "color": Color8(248, 248, 120),
+		"desc": "EVERY GAME STARTS WITH A BOOSTER: ALL YOUR MODIFIERS HIT HARDER FOR 2 SEC PER LEVEL.",
+		"icon": ["00110", "01100", "11111", "00110", "01100"]},
 	"turret": {"name": "TURRET", "max": 3, "color": Color8(248, 200, 72),
 		"desc": "A TURRET PER LEVEL GUARDS YOUR SIDE AND HITS BALLS THAT COME CLOSE. IT REBUILDS ITSELF.",
 		"icon": ["00100", "01110", "11011", "01110", "00100"]},
 }
 
 
+## Upgrades the CPU never gets (it collects no gems, so luck would only help the player).
+const CPU_EXCLUDED := ["lucky"]
+
+
 ## Picks up to count different upgrades that are not maxed out yet.
-static func offers(rng: RandomNumberGenerator, stacks: Dictionary, count: int = 3) -> Array[String]:
+static func offers(rng: RandomNumberGenerator, stacks: Dictionary, count: int = 3, excluded: Array = []) -> Array[String]:
 	var pool: Array[String] = []
 	for id in DEFS:
-		if stacks.get(id, 0) < DEFS[id].max:
+		if stacks.get(id, 0) < DEFS[id].max and not excluded.has(id):
 			pool.append(id)
 	for i in range(pool.size() - 1, 0, -1):
 		var j: int = rng.randi_range(0, i)

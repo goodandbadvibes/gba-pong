@@ -51,9 +51,19 @@ func _initialize() -> void:
 	_test_pause_blocks_play_and_toggles_sound()
 	_test_suspend_and_continue()
 	_test_main_menu_ends_run()
+	# Run start, CPU upgrades, poison, booster, power-up ramp
+	_test_run_starts_with_upgrade_pick()
+	_test_cpu_gains_upgrades_per_level()
+	_test_cpu_flame_burns_player()
+	_test_venom_builds_poison_and_triggers()
+	_test_poison_powerup()
+	_test_booster_amplifies_then_ends()
+	_test_overcharge_starts_games_boosted()
+	_test_powerup_ramp()
 	# Music
 	_test_music_layers_and_tempo()
 	_test_music_renders_a_loop()
+	_test_music_tracks_and_game_tempo()
 	# Touch
 	_test_tap_flow_title_map_round()
 	_test_swipe_moves_paddle()
@@ -459,7 +469,12 @@ func _drag(game: Node2D, pos: Vector2, relative: Vector2, index: int = 0) -> voi
 func _test_tap_flow_title_map_round() -> void:
 	var game := _new_game()
 	_touch(game, Vector2(120.0, 90.0), true)
-	_expect(game.state == game.State.MAP, "tapping NEW RUN on the title should start a run on the map")
+	_expect(game.state == game.State.UPGRADE and game.starting_pick, "tapping NEW RUN should open the starting upgrade pick")
+	game.screen_lock = 0.0
+	var Screens: GDScript = load("res://scripts/screens.gd")
+	var first: Vector2 = Screens.card_rect(0, game.offers.size()).get_center()
+	_touch(game, first, true)
+	_expect(game.state == game.State.MAP and game.map_anim == 0.0, "taking the starting upgrade should open the map")
 	game.screen_lock = 0.0
 	_touch(game, Vector2(60.0, 100.0), true)
 	_expect(game.state == game.State.SERVE, "a tap on the map should start the round")
@@ -656,10 +671,10 @@ func _test_virulent_strengthens_status() -> void:
 	var game := _game()
 	game.run.add("flame")
 	game.run.add("slime")
-	var burn: float = game.burn_strength()
-	var slime: float = game.slime_factor()
+	var burn: float = game.burn_strength(0)
+	var slime: float = game.slime_factor(0)
 	game.run.relics.append("virulent")
-	_expect(game.burn_strength() > burn and game.slime_factor() < slime, "VIRULENT should make burn and slime stronger")
+	_expect(game.burn_strength(0) > burn and game.slime_factor(0) < slime, "VIRULENT should make burn and slime stronger")
 	game.free()
 
 
@@ -834,4 +849,157 @@ func _test_music_renders_a_loop() -> void:
 	_expect(loud > 50, "the loop should not be silent")
 	var calm: AudioStreamWAV = music.render_now(1)
 	_expect(calm.data.size() > wav.data.size(), "a calmer level should loop slower (longer)")
+	music.free()
+
+
+# ---------------------------------------------------------------- run start, CPU upgrades
+
+func _test_run_starts_with_upgrade_pick() -> void:
+	var game := _new_game()
+	game.start_run()
+	_expect(game.state == game.State.UPGRADE and game.starting_pick and game.offers.size() == 3, "a run should start with a pick of 3 upgrades")
+	var picked: String = game.offers[2]
+	game.pick_upgrade(2)
+	_expect(game.state == game.State.MAP and game.map_anim == 0.0 and game.run.stack(picked) == 1 and not game.starting_pick, "the starting pick should lead to the map at level 1")
+	_expect(game.run.cpu_stacks.is_empty(), "the first opponent has no upgrades")
+	game.free()
+
+
+func _test_cpu_gains_upgrades_per_level() -> void:
+	var game := _game()
+	game.tuning.set_value("points_per_game", 1.0)
+	game.tuning.set_value("best_of", 1.0)
+	for lvl in 3:
+		game.start_round()
+		_score_point(game, 0)
+		_step(game, 120)
+		game.pick_upgrade(0)
+	var total: int = game.run.cpu_stacks.values().reduce(func(a, b): return a + b, 0)
+	_expect(total == 3, "after clearing 3 levels the CPU should have 3 upgrades, got %d" % total)
+	_expect(not game.run.cpu_stacks.has("lucky"), "the CPU never gets LUCKY FIND")
+	game.tuning.set_value("cpu_upgrades", 0.0)
+	game.start_round()
+	_score_point(game, 0)
+	_step(game, 120)
+	var after: int = game.run.cpu_stacks.values().reduce(func(a, b): return a + b, 0)
+	_expect(after == 3, "CPU UPGRADES PER LEVEL 0 should stop them")
+	game.free()
+
+
+func _test_cpu_flame_burns_player() -> void:
+	var game := _game()
+	game.run.cpu_add("flame")
+	var ball := _playing(game, Vector2(game.PADDLE_X[1] - 5.0, game.paddle_cy[1] - 2.0), Vector2(150.0, 0.0))
+	_step(game, 8)
+	_expect(ball.flame and ball.last_touch == 1, "a CPU with FLAME BALL should set balls on fire")
+	game.paddle_cy[0] = 80.0
+	ball.pos = Vector2(game.PADDLE_X[0] + game.PADDLE_W + 2.0, 78.0)
+	ball.vel = Vector2(-150.0, 0.0)
+	_step(game, 8)
+	_expect(game.effects[0].has("burn") and game.effects[0].burn.src == 1, "the CPU's burning ball should burn the player's paddle")
+	_expect(not ball.flame, "the player's return should put the ball out (no FLAME BALL)")
+	game.free()
+
+
+# ---------------------------------------------------------------- poison and booster
+
+func _test_venom_builds_poison_and_triggers() -> void:
+	var game := _game()
+	game.run.add("venom")
+	game.tuning.set_value("poison_cap", 4.0)
+	game.tuning.set_value("poison_freeze", 1.0)
+	game.tuning.set_value("drone_speed", 10.0)
+	game.spawn_drone(1, false)
+	var hp: int = game.drones[0].hp
+	for hit in 2:
+		game.paddle_cy[0] = 72.0
+		var ball := _playing(game, Vector2(14.0, 70.0), Vector2(-120.0, 0.0))
+		_step(game, 6)
+		_expect(ball.venom, "a ball hit with VENOM BALL should be poisonous")
+		ball.pos = Vector2(game.PADDLE_X[1] - 5.0, game.paddle_cy[1] - 2.0)
+		ball.vel = Vector2(150.0, 0.0)
+		_step(game, 8)
+		if hit == 0:
+			_expect(is_equal_approx(game.poison[1], 2.0), "one poisonous hit should add 2 poison, got %s" % game.poison[1])
+	_expect(game.poison[1] == 0.0 and game.frozen[1] > 0.0, "reaching the cap should freeze the CPU paddle and reset its poison")
+	_expect(game.drones.is_empty() or game.drones[0].hp < hp, "the poison burst should hurt the CPU's wingmen")
+	var y: float = game.paddle_cy[1]
+	game.balls.clear()
+	game.state = game.State.SERVE
+	game.serve_timer = 10.0
+	game.paddle_cy[1] = 30.0
+	y = game.paddle_cy[1]
+	_step(game, 20)
+	_expect(game.paddle_cy[1] == y, "a frozen paddle should not move")
+	_step(game, 60)
+	_expect(game.paddle_cy[1] != y, "the paddle should move again after the freeze")
+	game.free()
+
+
+func _test_poison_powerup() -> void:
+	var game := _game()
+	game.tuning.set_value("poison_pu", 4.0)
+	game.apply_powerup(game.PowerUp.POISON, 0)
+	_expect(is_equal_approx(game.poison[1], 4.0) and game.poison[0] == 0.0, "the POISON power-up should poison the collector's foe")
+	game.free()
+
+
+func _test_booster_amplifies_then_ends() -> void:
+	var game := _game()
+	game.run.add("long")
+	game.tuning.set_value("booster_time", 2.0)
+	game.tuning.set_value("booster_mult", 2.0)
+	var h: float = game.paddle_height(0)
+	game.apply_powerup(game.PowerUp.BOOSTER, 0)
+	_expect(game.paddle_height(0) > h, "a booster should make LONG PADDLE stronger")
+	game.apply_powerup(game.PowerUp.BIG_PADDLE, 0)
+	var big_boosted: float = game.paddle_height(0)
+	game.state = game.State.SERVE
+	game.serve_timer = 10.0
+	_step(game, 150)
+	_expect(not game.effects[0].has("boost"), "the booster should end after BOOSTER TIME")
+	_expect(game.paddle_height(0) < big_boosted, "effects should drop back once the booster ends")
+	game.free()
+
+
+func _test_overcharge_starts_games_boosted() -> void:
+	var game := _game()
+	game.run.add("overcharge")
+	game.start_round()
+	_expect(game.effects[0].has("boost") and is_equal_approx(game.effects[0].boost.t, 2.0), "OVERCHARGE should start each game with a 2 s booster")
+	game.free()
+
+
+func _test_powerup_ramp() -> void:
+	var game := _game()
+	game.tuning.set_value("pu_ramp_after", 30.0)
+	game.tuning.set_value("pu_ramp_mult", 2.0)
+	var normal: float = game._pu_interval()
+	game.round_time = 31.0
+	_expect(is_equal_approx(game._pu_interval(), normal / 2.0), "after 30 s power-ups should come twice as often")
+	game.tuning.set_value("pu_ramp_after", 0.0)
+	_expect(is_equal_approx(game._pu_interval(), normal), "NEVER should turn the ramp off")
+	game.free()
+
+
+# ---------------------------------------------------------------- music tracks
+
+func _test_music_tracks_and_game_tempo() -> void:
+	var music := _music()
+	_expect(music.track_bpm("game", 3, 2) > music.track_bpm("game", 3, 0), "the beat should speed up with each game in a level")
+	_expect(music.track_bpm("game", 4, 0) > music.track_bpm("game", 3, 0), "and with each level")
+	_expect(music.track_bpm("map", 3, 2) == music.tuning.get_value("map_bpm"), "the map track has its own tempo")
+	music.tuning.set_value("layer_arp", 0.0)
+	_expect(music.layers_for("shop", 0).has("arp") and not music.layers_for("game", 9).has("arp"), "layer settings only shape the game track")
+	for track in ["map", "shop"]:
+		var wav: AudioStreamWAV = music.render_now(1, track)
+		var loud: int = 0
+		for i in range(0, wav.data.size(), 97):
+			var v: int = wav.data[i]
+			if v > 127:
+				v -= 256
+			if absi(v) > 4:
+				loud += 1
+		_expect(loud > 50, "the %s track should not be silent" % track)
+		_expect(wav.data.size() == music.loop_samples(music.track_bpm(track, 1)), "the %s loop should be two bars" % track)
 	music.free()

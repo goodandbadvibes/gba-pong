@@ -17,6 +17,8 @@ var bosses: int = 0
 var shards: int = 0
 var tithe: int = 0
 var stacks: Dictionary = {}
+## The opponent's upgrades: one more each level after the first.
+var cpu_stacks: Dictionary = {}
 var relics: Array[String] = []
 var games: Array[int] = [0, 0]
 ## Games won in a row (MOMENTUM relic).
@@ -36,6 +38,7 @@ func start() -> void:
 	shards = 0
 	tithe = 0
 	stacks = {}
+	cpu_stacks = {}
 	relics.clear()
 	games.assign([0, 0])
 	streak = 0
@@ -51,6 +54,14 @@ func stack(id: String) -> int:
 
 func add(id: String) -> void:
 	stacks[id] = stack(id) + 1
+
+
+func cpu_stack(id: String) -> int:
+	return cpu_stacks.get(id, 0)
+
+
+func cpu_add(id: String) -> void:
+	cpu_stacks[id] = cpu_stack(id) + 1
 
 
 func has_relic(id: String) -> bool:
@@ -110,7 +121,7 @@ func finish() -> Dictionary:
 
 func to_dict() -> Dictionary:
 	return {"level": level, "cleared": cleared, "bosses": bosses, "shards": shards, "tithe": tithe,
-		"stacks": stacks.duplicate(), "relics": relics.duplicate(), "streak": streak,
+		"stacks": stacks.duplicate(), "cpu_stacks": cpu_stacks.duplicate(), "relics": relics.duplicate(), "streak": streak,
 		"second_wind_used": second_wind_used, "shop_pending": shop_pending}
 
 
@@ -121,6 +132,7 @@ func from_dict(d: Dictionary) -> void:
 	shards = int(d.get("shards", 0))
 	tithe = int(d.get("tithe", 0))
 	stacks = Dictionary(d.get("stacks", {})).duplicate()
+	cpu_stacks = Dictionary(d.get("cpu_stacks", {})).duplicate()
 	relics.assign(d.get("relics", []))
 	streak = int(d.get("streak", 0))
 	second_wind_used = bool(d.get("second_wind_used", false))

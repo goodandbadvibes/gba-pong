@@ -17,7 +17,7 @@ const Screens := preload("res://scripts/screens.gd")
 const Music := preload("res://scripts/music.gd")
 
 enum State { TITLE, MAP, SHOP, SERVE, PLAY, ROUND_END, UPGRADE, RUN_OVER }
-enum PowerUp { FAST_BALL, MULTI_BALL, BIG_PADDLE, FAST_PADDLE, SHRINK_FOE, SLOW_FOE, WINGMAN, TURRET }
+enum PowerUp { FAST_BALL, MULTI_BALL, BIG_PADDLE, FAST_PADDLE, SHRINK_FOE, SLOW_FOE, WINGMAN, TURRET, POISON, BOOSTER }
 
 const W := 240
 const H := 160
@@ -70,6 +70,10 @@ const PU_INFO := {
 		"icon": ["10100", "10101", "10101", "10101", "00101"]},
 	PowerUp.TURRET: {"label": "TURRET!", "color": Color8(248, 200, 72),
 		"icon": ["00100", "01110", "11011", "01110", "00100"]},
+	PowerUp.POISON: {"label": "POISON!", "color": Color8(176, 96, 248),
+		"icon": ["01110", "10101", "11111", "01110", "01010"]},
+	PowerUp.BOOSTER: {"label": "BOOSTER!", "color": Color8(248, 248, 120),
+		"icon": ["00110", "01100", "11111", "00110", "01100"]},
 }
 ## Timed paddle effects. size/speed are fixed multipliers; burn and slime are computed from upgrades.
 const EFFECT_INFO := {
@@ -77,6 +81,7 @@ const EFFECT_INFO := {
 	"small": {"size": 0.6, "speed": 1.0, "pu": PowerUp.SHRINK_FOE},
 	"fast": {"size": 1.0, "speed": 1.5, "pu": PowerUp.FAST_PADDLE},
 	"slow": {"size": 1.0, "speed": 0.6, "pu": PowerUp.SLOW_FOE},
+	"boost": {"size": 1.0, "speed": 1.0, "pu": PowerUp.BOOSTER},
 	"burn": {"upgrade": "flame"},
 	"slime": {"upgrade": "slime"},
 }
@@ -92,7 +97,7 @@ var persist_tuning: bool = true:
 var music: Music
 var state: State = State.TITLE
 var paddle_cy: Array[float] = [H / 2.0, H / 2.0]
-## effects[side][name] = {"t": seconds left, "total": starting seconds}
+## effects[side][name] = {"t": seconds left, "total": starting seconds, "src": side that caused it}
 var effects: Array[Dictionary] = [{}, {}]
 var balls: Array[Ball] = []
 var scores: Array[int] = [0, 0]
@@ -107,6 +112,12 @@ var gem_timer: float = 0.0
 var drones: Array[Dictionary] = []
 ## Turrets: {side, pos (center), hp, max_hp, alive, rebuild, hit_cd, temp, flash}
 var units: Array[Dictionary] = []
+## Poison built up on each side; at POISON TO TRIGGER the side's paddle freezes and its allies are hurt.
+var poison: Array[float] = [0.0, 0.0]
+## Seconds each paddle stays frozen.
+var frozen: Array[float] = [0.0, 0.0]
+## Seconds played in this round, for the power-up ramp.
+var round_time: float = 0.0
 
 # Round and screen flow
 var round_won: bool = false
@@ -115,6 +126,8 @@ var screen_lock: float = 0.0
 var map_anim: float = 0.0
 var offers: Array[String] = []
 var offer_index: int = 0
+## True for the free upgrade picked at the start of a run.
+var starting_pick: bool = false
 var shop_offers: Array[String] = []
 var shop_index: int = 0
 var title_index: int = 0
@@ -167,6 +180,7 @@ func _ready() -> void:
 	sfx["lose"] = _make_blip(131.0, 0.35)
 	sfx["break"] = _make_blip(165.0, 0.12)
 	sfx["zap"] = _make_blip(1480.0, 0.03)
+	sfx["poison"] = _make_blip(98.0, 0.3)
 	music = Music.new()
 	music.tuning = tuning
 	add_child(music)
@@ -176,7 +190,7 @@ func _process(delta: float) -> void:
 	blink += delta
 	AudioServer.set_bus_mute(0, tuning.get_value("sound") < 1.0)
 	if music:
-		music.play_for(music_intensity())
+		music.play_for(music_intensity(), music_track(), run.games[0] + run.games[1] if in_round() else 0)
 	if not menu_open and not paused:
 		screen_lock = maxf(0.0, screen_lock - delta)
 		map_anim = maxf(0.0, map_anim - delta)
@@ -194,6 +208,15 @@ func music_intensity() -> int:
 		State.TITLE, State.RUN_OVER:
 			return 0
 	return run.level + (1 if is_boss() and in_round() else 0)
+
+
+func music_track() -> String:
+	match state:
+		State.MAP, State.UPGRADE:
+			return "map"
+		State.SHOP:
+			return "shop"
+	return "game"
 
 
 func _screen_keys() -> void:
@@ -502,9 +525,14 @@ func _leave_to_title() -> void:
 
 # ---------------------------------------------------------------- run flow
 
+## A new run opens with a free upgrade pick, then the map.
 func start_run() -> void:
 	run.start()
-	_enter_map(false)
+	offers = Upgrades.offers(rng, run.stacks)
+	offer_index = 0
+	starting_pick = true
+	state = State.UPGRADE
+	screen_lock = SCREEN_LOCK
 	_play("menu")
 
 
@@ -515,6 +543,8 @@ func _clear_field() -> void:
 	drones.clear()
 	units.clear()
 	effects = [{}, {}]
+	poison = [0.0, 0.0]
+	frozen = [0.0, 0.0]
 
 
 func start_round() -> void:
@@ -525,17 +555,22 @@ func start_round() -> void:
 	pu_timer = _pu_interval()
 	gem_timer = _gem_interval()
 	serve_dir = 1 if rng.randf() < 0.5 else -1
-	for i in run.stack("turret"):
-		spawn_unit(0, false)
-	_refill_wingmen()
+	round_time = 0.0
+	for side in 2:
+		for i in level_of(side, "turret"):
+			spawn_unit(side, false)
+	_start_game()
 	_begin_serve()
 
 
-## WINGMAN upgrade: every game starts with one patrolling paddle per level.
-func _refill_wingmen() -> void:
-	var have: int = drones.filter(func(d: Dictionary) -> bool: return d.side == 0 and not d.temp).size()
-	for i in run.stack("wingman") - have:
-		spawn_drone(0, false)
+## Every game: WINGMAN refills patrolling paddles and OVERCHARGE starts a booster.
+func _start_game() -> void:
+	for side in 2:
+		var have: int = drones.filter(func(d: Dictionary) -> bool: return d.side == side and not d.temp).size()
+		for i in level_of(side, "wingman") - have:
+			spawn_drone(side, false)
+		if level_of(side, "overcharge") > 0:
+			_add_effect(side, "boost", 2.0 * level_of(side, "overcharge"), side)
 
 
 func games_to_win() -> int:
@@ -570,7 +605,7 @@ func _game_won(winner: int) -> void:
 	if run.games[winner] >= games_to_win():
 		_round_end(winner)
 	else:
-		_refill_wingmen()
+		_start_game()
 		_begin_serve(0.8)
 
 
@@ -583,9 +618,20 @@ func _round_end(winner: int) -> void:
 	bg_flash = 0.12
 	if round_won:
 		run.clear_round(int(tuning.get_value("boss_every")), int(tuning.get_value("shop_every")))
+		for i in int(tuning.get_value("cpu_upgrades")):
+			give_cpu_upgrade()
 		_play("win")
 	else:
 		_play("lose")
+
+
+## The opponent gets stronger: one random upgrade per level it reaches (none on level 1).
+func give_cpu_upgrade() -> String:
+	var pick: Array[String] = Upgrades.offers(rng, run.cpu_stacks, 1, Upgrades.CPU_EXCLUDED)
+	if pick.is_empty():
+		return ""
+	run.cpu_add(pick[0])
+	return pick[0]
 
 
 func _after_round() -> void:
@@ -593,6 +639,7 @@ func _after_round() -> void:
 	if round_won:
 		offers = Upgrades.offers(rng, run.stacks)
 		offer_index = 0
+		starting_pick = false
 		if offers.is_empty():
 			_enter_map(true)
 		else:
@@ -614,7 +661,8 @@ func pick_upgrade(index: int) -> void:
 		return
 	run.add(offers[index])
 	_play("power")
-	_enter_map(true)
+	_enter_map(not starting_pick)
+	starting_pick = false
 
 
 func _enter_map(advanced: bool) -> void:
@@ -671,11 +719,15 @@ func simulate(delta: float, dir: float) -> void:
 		hitstop -= delta
 		return
 
-	_move_paddle(0, dir * paddle_speed(0) * delta)
-	# Swipes move the paddle directly, scaled by speed effects and upgrades so they still matter.
-	_move_paddle(0, pending_swipe * paddle_speed(0) / tuning.get_value("player_speed"))
+	if frozen[0] <= 0.0:
+		_move_paddle(0, dir * paddle_speed(0) * delta)
+		# Swipes move the paddle directly, scaled by speed effects and upgrades so they still matter.
+		_move_paddle(0, pending_swipe * paddle_speed(0) / tuning.get_value("player_speed"))
 	pending_swipe = 0.0
-	_update_cpu(delta)
+	for side in 2:
+		frozen[side] = maxf(0.0, frozen[side] - delta)
+	if frozen[1] <= 0.0:
+		_update_cpu(delta)
 	_tick_paddle_effects(delta)
 	_update_allies(delta)
 
@@ -684,6 +736,7 @@ func simulate(delta: float, dir: float) -> void:
 		if serve_timer <= 0.0:
 			_launch_ball()
 	else:
+		round_time += delta
 		_update_pickups(delta)
 		for ball in balls.duplicate():
 			if state != State.PLAY:
@@ -697,45 +750,65 @@ func momentum_factor(side: int) -> float:
 	return 1.0 + MOMENTUM_STEP * mini(run.streak, MOMENTUM_MAX)
 
 
+## Upgrade levels of side (the player's picks or the CPU's), not scaled.
+func level_of(side: int, id: String) -> int:
+	return run.stack(id) if side == 0 else run.cpu_stack(id)
+
+
+## BOOSTER: while active, everything that side has works this much harder.
+func boost(side: int) -> float:
+	return tuning.get_value("booster_mult") if side >= 0 and effects[side].has("boost") else 1.0
+
+
+## Upgrade strength of side: its level times its booster.
+func up(side: int, id: String) -> float:
+	return level_of(side, id) * boost(side)
+
+
+## A fixed multiplier (power-up effect) pushed further by the booster of the side that caused it.
+func _boosted(mult: float, src: int) -> float:
+	return 1.0 + (mult - 1.0) * boost(src)
+
+
 func paddle_height(side: int) -> float:
-	var h: float = tuning.get_value("paddle_h") * momentum_factor(side)
-	if side == 0:
-		h *= 1.0 + 0.15 * run.stack("long")
+	var h: float = tuning.get_value("paddle_h") * momentum_factor(side) * (1.0 + 0.15 * up(side, "long"))
 	for name in effects[side]:
 		var e: Dictionary = effects[side][name]
 		if name == "burn":
-			h *= 1.0 - burn_strength() * (1.0 - e.t / e.total)
+			h *= 1.0 - burn_strength(e.src) * (1.0 - e.t / e.total)
 		elif EFFECT_INFO[name].has("size"):
-			h *= EFFECT_INFO[name].size
+			h *= _boosted(EFFECT_INFO[name].size, e.src)
 	return clampf(roundf(h), 4.0, BOTTOM - TOP)
 
 
 func paddle_speed(side: int) -> float:
 	var s: float
 	if side == 0:
-		s = tuning.get_value("player_speed") * (1.0 + 0.15 * run.stack("swift")) * momentum_factor(0)
+		s = tuning.get_value("player_speed") * momentum_factor(0)
 	else:
 		s = tuning.get_value("cpu_speed") * level_factor("cpu_lv")
+	s *= 1.0 + 0.15 * up(side, "swift")
 	for name in effects[side]:
+		var e: Dictionary = effects[side][name]
 		if name == "slime":
-			s *= slime_factor()
+			s *= slime_factor(e.src)
 		elif EFFECT_INFO[name].has("speed"):
-			s *= EFFECT_INFO[name].speed
+			s *= _boosted(EFFECT_INFO[name].speed, e.src)
 	return s
 
 
-## VIRULENT relic: status effects last and hit 50% more.
-func status_boost() -> float:
-	return 1.5 if run.has_relic("virulent") else 1.0
+## VIRULENT relic (player only): status effects last and hit 50% more.
+func status_boost(src: int) -> float:
+	return 1.5 if src == 0 and run.has_relic("virulent") else 1.0
 
 
-## How much of the paddle a full burn takes away (more with more FLAME BALL levels).
-func burn_strength() -> float:
-	return minf(0.8, (0.3 + 0.1 * maxi(0, run.stack("flame") - 1)) * status_boost())
+## How much of the paddle a full burn from src takes away (more with more FLAME BALL).
+func burn_strength(src: int) -> float:
+	return minf(0.8, (0.3 + 0.1 * maxf(0.0, up(src, "flame") - 1.0)) * status_boost(src))
 
 
-func slime_factor() -> float:
-	var slow: float = (0.4 + 0.1 * maxi(0, run.stack("slime") - 1)) * status_boost()
+func slime_factor(src: int) -> float:
+	var slow: float = (0.4 + 0.1 * maxf(0.0, up(src, "slime") - 1.0)) * status_boost(src)
 	return maxf(0.2, 1.0 - slow)
 
 
@@ -791,8 +864,8 @@ func _move_ball(ball: Ball, delta: float) -> void:
 	ball.trail.push_front(ball.pos)
 	if ball.trail.size() > 5:
 		ball.trail.pop_back()
-	if (ball.flame or ball.slime) and rng.randf() < 0.5:
-		var col: Color = upgrade_color("flame") if ball.flame else upgrade_color("slime")
+	if (ball.flame or ball.slime or ball.venom) and rng.randf() < 0.5:
+		var col: Color = upgrade_color("flame") if ball.flame else (upgrade_color("slime") if ball.slime else upgrade_color("venom"))
 		particles.append({"pos": ball.pos + Vector2(rng.randf_range(0, BALL), rng.randf_range(0, BALL)),
 			"vel": Vector2(rng.randf_range(-10, 10), -20.0 if ball.flame else 25.0), "life": 0.25, "color": col})
 
@@ -844,8 +917,9 @@ func _overlaps_paddle(ball: Ball, side: int) -> bool:
 
 
 ## Sends a ball back toward the other side, angled by where it hit (center_y +- half).
-## source is "paddle", "drone" or "unit": the player's own paddle always applies upgrades,
-## wingmen need WING SYNC and turrets need HIVE MIND.
+## source is "paddle", "drone" or "unit". A ball last hit by the other side hands over its
+## burn, slime and poison first. Then the hitter's upgrades go on the ball: the CPU's always,
+## the player's from the paddle, from wingmen with WING SYNC and from turrets with HIVE MIND.
 func _deflect(ball: Ball, side: int, center_y: float, half: float, source: String) -> void:
 	var offset: float = clampf((ball.pos.y + BALL / 2.0 - center_y) / maxf(half, 1.0), -1.0, 1.0)
 	var top_speed: float = tuning.get_value("ball_max") * level_factor("ball_lv")
@@ -854,25 +928,17 @@ func _deflect(ball: Ball, side: int, center_y: float, half: float, source: Strin
 	var dir_x: float = 1.0 if side == 0 else -1.0
 	var center: Vector2 = ball.pos + Vector2.ONE * BALL / 2.0
 
-	if side == 1:
-		# A burning or slimy ball hands its effect to the CPU, then the CPU's return clears it.
-		if ball.flame:
-			_add_effect(1, "burn", (tuning.get_value("burn_time") + 0.5 * (run.stack("flame") - 1)) * status_boost())
-			_popup("BURN!", center, upgrade_color("flame"))
-			_burst(center, Vector2(-1, 0), 14, upgrade_color("flame"))
-		if ball.slime:
-			_add_effect(1, "slime", (tuning.get_value("slime_time") + 0.5 * (run.stack("slime") - 1)) * status_boost())
-			_popup("SLIMED!", center + Vector2(0, 8), upgrade_color("slime"))
-			_burst(center, Vector2(-1, 0), 14, upgrade_color("slime"))
-		ball.flame = false
-		ball.slime = false
-	else:
-		var inherits: bool = source == "paddle" or (source == "drone" and run.has_relic("sync")) \
-			or (source == "unit" and run.has_relic("hive"))
-		if inherits:
-			speed *= 1.0 + 0.12 * run.stack("power")
-		ball.flame = inherits and run.stack("flame") > 0
-		ball.slime = inherits and run.stack("slime") > 0
+	if ball.last_touch == 1 - side:
+		_inflict(ball, side, center)
+
+	var inherits: bool = side == 1 or source == "paddle" or (source == "drone" and run.has_relic("sync")) \
+		or (source == "unit" and run.has_relic("hive"))
+	if inherits:
+		speed *= 1.0 + 0.12 * up(side, "power")
+	ball.flame = inherits and level_of(side, "flame") > 0
+	ball.slime = inherits and level_of(side, "slime") > 0
+	ball.venom = inherits and level_of(side, "venom") > 0
+	if side == 0:
 		var err: float = cpu_error()
 		cpu_aim_error = rng.randf_range(-err, err)
 
@@ -891,6 +957,44 @@ func _deflect(ball: Ball, side: int, center_y: float, half: float, source: Strin
 		_popup("SPLIT!", center, Relics.DEFS.splitter.color)
 
 
+## A burning, slimy or poisonous ball from the other side hits side: hand over its effects.
+func _inflict(ball: Ball, side: int, center: Vector2) -> void:
+	var src: int = 1 - side
+	var away: Vector2 = Vector2(1, 0) if side == 0 else Vector2(-1, 0)
+	if ball.flame:
+		_add_effect(side, "burn", (tuning.get_value("burn_time") + 0.5 * (up(src, "flame") - 1.0)) * status_boost(src), src)
+		_popup("BURN!", center, upgrade_color("flame"))
+		_burst(center, away, 14, upgrade_color("flame"))
+	if ball.slime:
+		_add_effect(side, "slime", (tuning.get_value("slime_time") + 0.5 * (up(src, "slime") - 1.0)) * status_boost(src), src)
+		_popup("SLIMED!", center + Vector2(0, 8), upgrade_color("slime"))
+		_burst(center, away, 14, upgrade_color("slime"))
+	if ball.venom:
+		# VENOM BALL: 2 poison per hit at level 1, one more per extra level.
+		add_poison(side, 1.0 + up(src, "venom"))
+		_burst(center, away, 8, upgrade_color("venom"))
+
+
+## Adds poison to side; reaching POISON TO TRIGGER freezes its paddle and hurts its allies.
+func add_poison(side: int, amount: float) -> void:
+	poison[side] += amount
+	if poison[side] < tuning.get_value("poison_cap"):
+		return
+	poison[side] = 0.0
+	frozen[side] = tuning.get_value("poison_freeze")
+	var at := Vector2(PADDLE_X[side] + PADDLE_W / 2.0, paddle_cy[side])
+	_popup("POISONED!", at + Vector2(16 if side == 0 else -16, -10), upgrade_color("venom"), 1.0)
+	_burst(at, Vector2.ZERO, 24, upgrade_color("venom"))
+	for d in drones.duplicate():
+		if d.side == side:
+			_damage_drone(d)
+	for u in units:
+		if u.side == side and u.alive:
+			_damage_unit(u)
+	_shake(4.0)
+	_play("poison")
+
+
 func _split_ball(ball: Ball, turn: float) -> bool:
 	if balls.size() >= int(tuning.get_value("max_balls")):
 		return false
@@ -900,6 +1004,7 @@ func _split_ball(ball: Ball, turn: float) -> bool:
 	extra.last_touch = ball.last_touch
 	extra.flame = ball.flame
 	extra.slime = ball.slime
+	extra.venom = ball.venom
 	balls.append(extra)
 	return true
 
@@ -998,11 +1103,7 @@ func _collide_drones(ball: Ball) -> bool:
 			continue
 		ball.pos.x = rect.end.x if side == 0 else rect.position.x - BALL
 		_deflect(ball, side, d.y, DRONE_H / 2.0, "drone")
-		d.hp -= 1
-		d.flash = 0.12
-		if d.hp <= 0:
-			drones.erase(d)
-			_ally_destroyed(Vector2(d.x, d.y), "WINGMAN DOWN")
+		_damage_drone(d)
 		return true
 	return false
 
@@ -1016,20 +1117,33 @@ func _collide_units(ball: Ball) -> bool:
 			continue
 		_deflect(ball, side, u.pos.y, reach, "unit")
 		u.hit_cd = UNIT_HIT_COOLDOWN
-		u.flash = 0.12
-		u.hp -= 1
 		# A short zap line from the turret to the ball.
 		for i in 6:
 			particles.append({"pos": u.pos.lerp(center, i / 5.0), "vel": Vector2.ZERO, "life": 0.12, "color": PU_INFO[PowerUp.TURRET].color})
-		if u.hp <= 0:
-			u.alive = false
-			_ally_destroyed(u.pos, "TURRET DOWN")
-			if u.temp:
-				units.erase(u)
-			else:
-				u.rebuild = tuning.get_value("unit_respawn") / (2.0 if side == 0 and run.has_relic("repair") else 1.0)
+		_damage_unit(u)
 		return true
 	return false
+
+
+func _damage_drone(d: Dictionary) -> void:
+	d.hp -= 1
+	d.flash = 0.12
+	if d.hp <= 0:
+		drones.erase(d)
+		_ally_destroyed(Vector2(d.x, d.y), "WINGMAN DOWN")
+
+
+func _damage_unit(u: Dictionary) -> void:
+	u.flash = 0.12
+	u.hp -= 1
+	if u.hp > 0:
+		return
+	u.alive = false
+	_ally_destroyed(u.pos, "TURRET DOWN")
+	if u.temp:
+		units.erase(u)
+	else:
+		u.rebuild = tuning.get_value("unit_respawn") / (2.0 if u.side == 0 and run.has_relic("repair") else 1.0)
 
 
 func _ally_destroyed(at: Vector2, text: String) -> void:
@@ -1043,7 +1157,13 @@ func _ally_destroyed(at: Vector2, text: String) -> void:
 # ---------------------------------------------------------------- power-ups, gems, magnet
 
 func _pu_interval() -> float:
-	return tuning.get_value("pu_interval") / (1.0 + 0.25 * run.stack("lucky"))
+	return tuning.get_value("pu_interval") / (1.0 + 0.25 * run.stack("lucky")) / pu_ramp()
+
+
+## After MORE POWER UPS AFTER SEC in a round, power-ups come POWER UPS THEN X MORE OFTEN.
+func pu_ramp() -> float:
+	var after: float = tuning.get_value("pu_ramp_after")
+	return tuning.get_value("pu_ramp_mult") if after > 0.0 and round_time >= after else 1.0
 
 
 func _gem_interval() -> float:
@@ -1060,6 +1180,8 @@ func _update_pickups(delta: float) -> void:
 	_apply_magnet(delta)
 	if tuning.get_value("powerups") >= 1.0:
 		pu_timer -= delta
+		# The ramp also shortens a wait that started before it kicked in.
+		pu_timer = minf(pu_timer, _pu_interval() * 1.3)
 		if pu_timer <= 0.0:
 			pu_timer = _pu_interval() * rng.randf_range(0.7, 1.3)
 			if powerups.size() < int(tuning.get_value("pu_max")):
@@ -1071,16 +1193,16 @@ func _update_pickups(delta: float) -> void:
 			spawn_gem()
 
 
-## Balls the player hit last pull power-ups and gems within range toward themselves.
+## MAGNET BALL: balls pull power-ups and gems within range toward themselves, for whoever hit them last.
 func _apply_magnet(delta: float) -> void:
-	var level: int = run.stack("magnet")
-	if level == 0:
-		return
-	var reach: float = tuning.get_value("magnet_range") + 15.0 * (level - 1)
-	var pull: float = (50.0 + 30.0 * level) * delta
 	for ball in balls:
-		if ball.last_touch != 0:
+		if ball.last_touch < 0:
 			continue
+		var level: float = up(ball.last_touch, "magnet")
+		if level <= 0.0:
+			continue
+		var reach: float = tuning.get_value("magnet_range") + 15.0 * (level - 1.0)
+		var pull: float = (50.0 + 30.0 * level) * delta
 		var center: Vector2 = ball.pos + Vector2.ONE * BALL / 2.0
 		for item in powerups + gems:
 			var size: float = PU_SIZE if item.has("type") else GEM_SIZE
@@ -1108,12 +1230,11 @@ func _random_field_spot(size: float) -> Vector2:
 	return Vector2(rng.randf_range(80.0, W - 80.0 - size), rng.randf_range(TOP + 10.0, BOTTOM - 10.0 - size))
 
 
-## Collision box for a pickup: POWER UP HITBOX around the item's center, bigger for the player's
-## balls with BIG GRAB.
+## Collision box for a pickup: POWER UP HITBOX around the item's center, bigger with BIG GRAB.
 func pickup_rect(item_pos: Vector2, item_size: float, ball: Ball) -> Rect2:
 	var box: float = tuning.get_value("pu_hitbox")
-	if ball.last_touch == 0:
-		box += 4.0 * run.stack("grab")
+	if ball.last_touch >= 0:
+		box += 4.0 * up(ball.last_touch, "grab")
 	var center: Vector2 = item_pos + Vector2.ONE * item_size / 2.0
 	return Rect2(center - Vector2.ONE * box / 2.0, Vector2.ONE * box)
 
@@ -1147,19 +1268,23 @@ func apply_powerup(type: int, side: int, ball: Ball = null) -> void:
 	match type:
 		PowerUp.FAST_BALL:
 			if ball:
-				ball.vel *= 1.35
+				ball.vel *= _boosted(1.35, side)
 		PowerUp.MULTI_BALL:
 			if ball:
 				_split_ball(ball, -MULTI_SPREAD)
 				_split_ball(ball, MULTI_SPREAD)
 		PowerUp.BIG_PADDLE:
-			_add_effect(side, "big", duration)
+			_add_effect(side, "big", duration, side)
 		PowerUp.FAST_PADDLE:
-			_add_effect(side, "fast", duration)
+			_add_effect(side, "fast", duration, side)
 		PowerUp.SHRINK_FOE:
-			_add_effect(foe, "small", duration)
+			_add_effect(foe, "small", duration, side)
 		PowerUp.SLOW_FOE:
-			_add_effect(foe, "slow", duration)
+			_add_effect(foe, "slow", duration, side)
+		PowerUp.POISON:
+			add_poison(foe, tuning.get_value("poison_pu") * boost(side))
+		PowerUp.BOOSTER:
+			_add_effect(side, "boost", tuning.get_value("booster_time"), side)
 		PowerUp.WINGMAN:
 			spawn_drone(side, true)
 		PowerUp.TURRET:
@@ -1174,8 +1299,9 @@ func apply_powerup(type: int, side: int, ball: Ball = null) -> void:
 	_play("power")
 
 
-func _add_effect(side: int, name: String, duration: float) -> void:
-	effects[side][name] = {"t": duration, "total": duration}
+## src is the side that caused it, whose booster and upgrades set its strength.
+func _add_effect(side: int, name: String, duration: float, src: int) -> void:
+	effects[side][name] = {"t": duration, "total": duration, "src": src}
 	_move_paddle(side, 0.0)
 
 
@@ -1243,6 +1369,8 @@ func _menu_items() -> Array[Dictionary]:
 	items.append({"kind": "lose_round", "label": "LOSE THIS ROUND NOW"})
 	items.append({"kind": "shop", "label": "OPEN SHOP NOW"})
 	items.append({"kind": "gems", "label": "GIVE 20 GEMS"})
+	items.append({"kind": "cpu_upgrade", "label": "GIVE CPU A RANDOM UPGRADE"})
+	items.append({"kind": "poison_cpu", "label": "POISON THE CPU +5"})
 	for id in Upgrades.DEFS:
 		items.append({"kind": "upgrade", "id": id, "label": "ADD UPGRADE " + Upgrades.DEFS[id].name})
 	for id in Relics.DEFS:
@@ -1318,6 +1446,12 @@ func _menu_action(action: String, steps: int = 1) -> void:
 				"gems":
 					run.gems += 20
 					run.save()
+				"cpu_upgrade":
+					var id: String = give_cpu_upgrade()
+					if id != "":
+						_popup("CPU GOT " + Upgrades.DEFS[id].name, Vector2(W / 2.0, 30.0), SIDE_COL[1])
+				"poison_cpu":
+					add_poison(1, 5.0)
 				"upgrade":
 					run.add(item.id)
 					_popup(Upgrades.DEFS[item.id].name + " LV %d" % run.stack(item.id), Vector2(W / 2.0, 30.0), Upgrades.DEFS[item.id].color)
@@ -1392,6 +1526,7 @@ func _draw_court() -> void:
 	_draw_score(0, W / 2 - 19)
 	_draw_score(1, W / 2 + 19)
 	_draw_game_pips()
+	_draw_poison_meters()
 	_draw_effect_icons(0)
 	_draw_effect_icons(1)
 
@@ -1465,6 +1600,20 @@ func _draw_hp(center_top: Vector2, hp: int, max_hp: int) -> void:
 		draw_rect(Rect2(x + i * 2, center_top.y, 1, 1), SPARK if i < hp else DIM)
 
 
+## Poison meters below the game pips, shown once either side can poison.
+func _draw_poison_meters() -> void:
+	if poison[0] <= 0.0 and poison[1] <= 0.0 and level_of(0, "venom") == 0 and level_of(1, "venom") == 0:
+		return
+	var cap: float = tuning.get_value("poison_cap")
+	for side in 2:
+		var x: int = W / 2 - 48 if side == 0 else W / 2 + 32
+		draw_rect(Rect2(x, 10, 16, 1), DIM)
+		var fill: float = ceilf(16.0 * clampf(poison[side] / cap, 0.0, 1.0))
+		if fill > 0.0:
+			# Fill from the outside edge toward the score.
+			draw_rect(Rect2(x + (16 - fill if side == 0 else 0), 10, fill, 1), upgrade_color("venom"))
+
+
 ## Games won this round as small squares beside each score.
 func _draw_game_pips() -> void:
 	for side in 2:
@@ -1485,6 +1634,8 @@ func _draw_trail(ball: Ball) -> void:
 			c = upgrade_color("flame") if i < 2 else Color8(160, 48, 16)
 		elif ball.slime:
 			c = upgrade_color("slime") if i < 2 else Color8(48, 120, 32)
+		elif ball.venom:
+			c = upgrade_color("venom") if i < 2 else Color8(88, 48, 128)
 		draw_rect(Rect2((ball.trail[i] + Vector2.ONE * (BALL - s) / 2.0).round(), Vector2(s, s).round()), c)
 
 
@@ -1500,6 +1651,8 @@ func _draw_ball(ball: Ball) -> void:
 		color = SPARK if fmod(blink, 0.12) < 0.06 else upgrade_color("flame")
 	elif ball.slime:
 		color = upgrade_color("slime")
+	elif ball.venom:
+		color = upgrade_color("venom")
 	draw_rect(Rect2((center - size / 2.0).round(), size), color)
 
 
@@ -1507,7 +1660,11 @@ func _draw_paddle(side: int) -> void:
 	var flash: bool = paddle_flash[side] > 0.0
 	var kick: float = (2.0 if side == 1 else -2.0) if flash else 0.0
 	var color: Color = WHITE if flash else SIDE_COL[side]
+	if frozen[side] > 0.0:
+		color = Color8(168, 216, 248) if fmod(blink, 0.16) < 0.12 else upgrade_color("venom")
 	var rect := Rect2(Vector2(PADDLE_X[side] + kick, paddle_top(side)).round(), Vector2(PADDLE_W, paddle_height(side)))
+	if effects[side].has("boost") and fmod(blink, 0.1) < 0.05:
+		draw_rect(rect.grow(1), PU_INFO[PowerUp.BOOSTER].color)
 	draw_rect(rect, color)
 	# A 1px stripe in the effect's color while a paddle effect is active.
 	if not effects[side].is_empty() and not flash:
@@ -1625,6 +1782,10 @@ func _draw_menu() -> void:
 			PixelFont.draw(self, "OWNED" if run.has_relic(item.id) else "-", W - 4, y, 1, color, PixelFont.Align.RIGHT)
 		elif item.kind == "gems":
 			PixelFont.draw(self, str(run.gems), W - 4, y, 1, GEM_COL, PixelFont.Align.RIGHT)
+		elif item.kind == "cpu_upgrade":
+			PixelFont.draw(self, str(run.cpu_stacks.values().reduce(func(a, b): return a + b, 0)), W - 4, y, 1, color, PixelFont.Align.RIGHT)
+		elif item.kind == "poison_cpu":
+			PixelFont.draw(self, "%d/%d" % [int(poison[1]), int(tuning.get_value("poison_cap"))], W - 4, y, 1, color, PixelFont.Align.RIGHT)
 
 	if touch_seen:
 		# Tappable button bar instead of the keyboard hint.

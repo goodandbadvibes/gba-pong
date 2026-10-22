@@ -101,10 +101,12 @@ static func draw_map(g: Node2D) -> void:
 	PixelFont.draw(g, "CPU SPEED %d%%   AIM ERROR %d" % [cpu_pct, roundi(g.cpu_error())], W / 2, 80, 1, Palette.MID, CENTER)
 	PixelFont.draw(g, "BEST OF %d GAMES   FIRST TO %d POINTS" % [int(g.tuning.get_value("best_of")), int(g.tuning.get_value("points_per_game"))], W / 2, 89, 1, Palette.MID, CENTER)
 
-	PixelFont.draw(g, "UPGRADES", 6, 104, 1, Palette.DIM)
-	_draw_owned(g, 103)
-	PixelFont.draw(g, "RELICS", 6, 118, 1, Palette.DIM)
-	_draw_relics_row(g, 117)
+	PixelFont.draw(g, "YOURS", 6, 101, 1, Palette.DIM)
+	_draw_owned(g, 100)
+	PixelFont.draw(g, "RELICS", 6, 114, 1, Palette.DIM)
+	_draw_relics_row(g, 113)
+	PixelFont.draw(g, "FOE", 6, 127, 1, Palette.CPU.darkened(0.3))
+	_draw_owned(g, 126, run.cpu_stacks)
 	if g.map_anim <= 0.0 and fmod(g.blink, 0.8) < 0.5:
 		var prompt: String = "PRESS OR TAP TO ENTER THE SHOP" if run.shop_pending else "PRESS UP OR DOWN OR TAP TO PLAY"
 		PixelFont.draw(g, prompt, W / 2, 146, 1, Palette.GEM if run.shop_pending else Palette.PLAYER, CENTER)
@@ -113,8 +115,8 @@ static func draw_map(g: Node2D) -> void:
 # ---------------------------------------------------------------- upgrade and shop cards
 
 static func draw_upgrade(g: Node2D) -> void:
-	PixelFont.draw(g, "ROUND CLEAR!", W / 2, 2, 2, Palette.PLAYER, CENTER)
-	PixelFont.draw(g, "CHOOSE AN UPGRADE", W / 2, 17, 1, Palette.MID, CENTER)
+	PixelFont.draw(g, "NEW RUN" if g.starting_pick else "ROUND CLEAR!", W / 2, 2, 2, Palette.PLAYER, CENTER)
+	PixelFont.draw(g, "CHOOSE A STARTING UPGRADE" if g.starting_pick else "CHOOSE AN UPGRADE", W / 2, 17, 1, Palette.MID, CENTER)
 	var count: int = g.offers.size()
 	for i in count:
 		var id: String = g.offers[i]
@@ -269,9 +271,10 @@ static func _draw_relic_list(g: Node2D) -> void:
 
 # ---------------------------------------------------------------- shared rows
 
-## The run's upgrades as icons with their level.
-static func _draw_owned(g: Node2D, y: int) -> void:
-	var ids: Array = g.run.stacks.keys()
+## Upgrades as icons with their level: the player's by default, or another stacks dictionary (the CPU's).
+static func _draw_owned(g: Node2D, y: int, stacks: Variant = null) -> void:
+	var owned: Dictionary = g.run.stacks if stacks == null else stacks
+	var ids: Array = owned.keys()
 	if ids.is_empty():
 		PixelFont.draw(g, "NONE YET", W / 2, y + 1, 1, Palette.DIM, CENTER)
 		return
@@ -280,7 +283,7 @@ static func _draw_owned(g: Node2D, y: int) -> void:
 	for id in ids:
 		var def: Dictionary = Upgrades.DEFS[id]
 		g.draw_icon(def.icon, Vector2(x, y), def.color)
-		PixelFont.draw(g, str(g.run.stack(id)), x + 7, y, 1, Palette.WHITE)
+		PixelFont.draw(g, str(owned[id]), x + 7, y, 1, Palette.WHITE)
 		x += step
 
 
