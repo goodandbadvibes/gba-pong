@@ -29,22 +29,21 @@ buttons.
 | LONG PADDLE | +15% paddle size per level |
 | POWER HIT | balls you hit fly 12% faster per level |
 | LUCKY FIND | more power-ups and gem shards, shards worth more |
-| BIG GRAB | your balls collect things from further away |
 | WINGMAN | every game starts with an extra paddle per level that patrols up and down in front of yours |
 | VENOM BALL | balls you hit are poisonous; at 10 poison a poison patch appears on the foe's track and slows its paddle while it is over it |
 | OVERCHARGE | every game starts with a booster, 2 seconds per level |
 | BALL FACTORY | every game starts with a ball generator on your side: 2 balls, +1 per extra level |
-| TURRET | a turret per level guards your side and swats balls that come close; it rebuilds after a cooldown |
+| TURRET | a turret per level sits on your side and speeds up your balls that pass through its ring; foe balls passing through damage it; it rebuilds after a cooldown |
 
 **Wingmen and turrets** have HP (2 hits by default); every ball they hit costs one. Wingmen
-patrol on their own; turrets stay put and hit balls within reach, with the same effect as a
-paddle hit. The WINGMAN and TURRET power-ups give either side a one-off wingman or turret.
+patrol on their own and send balls back like a paddle (each hit costs 1 HP); turrets stay put,
+speed up their own side's balls (1.25x per pass) and lose 1 HP to each foe ball passing through. The WINGMAN and TURRET power-ups give either side a one-off wingman or turret.
 
 **Relics** (shop, once per run each):
 
 | Relic | Effect |
 |---|---|
-| HIVE MIND | your turrets use your upgrades (flame, slime, power hit) |
+| HIVE MIND | balls your turrets speed up also get your flame, slime and venom |
 | WING SYNC | your wingmen use your upgrades |
 | VIRULENT | burn and slime last 50% longer and hit 50% harder |
 | SPLITTER | each paddle hit has a chance to split off an extra ball |
@@ -71,6 +70,8 @@ layer (hats, arpeggio, lead); the tempo rises each level and again with every ga
 their own calm track and the shop a bouncy one. The debug menu sets volume, base tempo, tempo per level, a fixed intensity and each layer
 (OFF / AUTO / ON).
 
+Winning a level plays a victory jingle and losing one a loss jingle.
+
 **Power-ups** spawn mid-court and go to whoever touched the ball that collects them last (a freshly
 served ball collects nothing). Gem shards only count for balls you hit. The **rope** (a line along the top of the HUD) burns
 down over 30 seconds of a round; after that, power-ups come twice as often (both tunable).
@@ -89,7 +90,8 @@ down over 30 seconds of a round; after that, power-ups come twice as often (both
 | purple | SLOW FOE | opponent paddle 0.6x as fast |
 
 **Debug menu:** F1 or ` (backtick), or tap the top center of the screen (touch screens get a
-tappable UP / DOWN / - / + / OK / CLOSE bar). It has every tunable value (match length, opponent
+tappable UP / DOWN / - / + / OK / CLOSE bar). It has every tunable value, including a power-up chance table that shows each
+power-up's share (match length, opponent
 difficulty per level, boss strength, power-up hitbox, upgrade timings and more), plus buttons to win
 or lose the current round, add any upgrade, spawn power-ups or gems, and reset settings or saved
 progress. Settings and progress are saved (in the browser for the web build).

@@ -38,7 +38,7 @@ func _initialize() -> void:
 	# Wingmen and turrets
 	_test_wingman_powerup_blocks_and_breaks()
 	_test_wingman_patrols()
-	_test_turret_hits_breaks_and_rebuilds()
+	_test_turret_boosts_and_takes_damage()
 	_test_temp_turret_is_not_rebuilt()
 	_test_wingman_and_turret_upgrades_spawn()
 	# Relics, shop, pause, suspend
@@ -78,6 +78,8 @@ func _initialize() -> void:
 	_test_generator_powerup_launches_its_balls()
 	_test_factory_and_mill()
 	_test_rope_and_serve_arrow_state()
+	_test_powerup_chance_table()
+	_test_level_jingles()
 	# Touch
 	_test_tap_flow_title_map_round()
 	_test_swipe_moves_paddle()
@@ -605,19 +607,27 @@ func _test_wingman_patrols() -> void:
 	game.free()
 
 
-func _test_turret_hits_breaks_and_rebuilds() -> void:
+## Sends a ball straight through a turret's reach, from right to left, and steps until it is past.
+func _pass_turret(game: Node2D, u: Dictionary, last_touch: int) -> Ball:
+	var ball := _playing(game, u.pos + Vector2(30.0, -2.0), Vector2(-120.0, 0.0), last_touch)
+	game.hitstop = 0.0
+	_step(game, 30)
+	return ball
+
+
+func _test_turret_boosts_and_takes_damage() -> void:
 	var game := _game()
 	game.tuning.set_value("unit_hp", 2.0)
 	game.tuning.set_value("unit_respawn", 2.0)
+	game.tuning.set_value("unit_boost", 1.5)
 	game.spawn_unit(0, false)
 	var u: Dictionary = game.units[0]
-	for hit in 2:
-		u.hit_cd = 0.0
-		game.hitstop = 0.0
-		var ball := _playing(game, u.pos + Vector2(20.0, -2.0), Vector2(-150.0, 0.0))
-		_step(game, 6)
-		_expect(ball.vel.x > 0.0 and ball.last_touch == 0, "hit %d: the turret should hit the ball back" % (hit + 1))
-	_expect(not u.alive and u.rebuild > 0.0, "two hits should destroy a 2 HP turret")
+	var friendly := _pass_turret(game, u, 0)
+	_expect(is_equal_approx(friendly.vel.length(), 180.0), "a friendly ball should be sped up once per pass (120 -> 180), got %s" % friendly.vel.length())
+	_expect(friendly.vel.x < 0.0 and u.hp == 2, "the turret should not turn the ball around or lose HP to a friendly ball")
+	for i in 2:
+		_pass_turret(game, u, 1)
+	_expect(not u.alive and u.rebuild > 0.0, "two foe balls passing through should destroy a 2 HP turret")
 	game.balls.clear()
 	game.state = game.State.SERVE
 	game.serve_timer = 10.0
@@ -630,10 +640,7 @@ func _test_temp_turret_is_not_rebuilt() -> void:
 	var game := _game()
 	game.tuning.set_value("unit_hp", 1.0)
 	game.apply_powerup(game.PowerUp.TURRET, 0)
-	var u: Dictionary = game.units[0]
-	_playing(game, u.pos + Vector2(20.0, 0.0), Vector2(-150.0, 0.0))
-	game.hitstop = 0.0
-	_step(game, 6)
+	_pass_turret(game, game.units[0], 1)
 	_expect(game.units.is_empty(), "a turret from a power-up should be gone for good once destroyed")
 	game.free()
 
@@ -662,10 +669,8 @@ func _test_hive_and_sync_pass_on_upgrades() -> void:
 		if relic != "":
 			game.run.relics.append(relic)
 		game.spawn_unit(0, false)
-		var u: Dictionary = game.units[0]
-		var ball := _playing(game, u.pos + Vector2(20.0, 0.0), Vector2(-150.0, 0.0))
-		_step(game, 6)
-		_expect(ball.flame == (relic == "hive"), "turret hit with relic [%s]: flame=%s" % [relic, ball.flame])
+		var ball := _pass_turret(game, game.units[0], 0)
+		_expect(ball.flame == (relic == "hive"), "turret boost with relic [%s]: flame=%s" % [relic, ball.flame])
 		game.free()
 	for relic in ["", "sync"]:
 		var game := _game()
@@ -1197,4 +1202,46 @@ func _test_rope_and_serve_arrow_state() -> void:
 	_expect(game.pu_ramp() > 1.0, "once the rope has burnt down power-ups come faster")
 	game.start_round()
 	_expect(game.state == game.State.SERVE and abs(game.serve_dir) == 1, "each serve knows its direction for the arrow")
+	game.free()
+
+
+# ---------------------------------------------------------------- chance table, jingles
+
+func _test_powerup_chance_table() -> void:
+	var game := _game()
+	for key in game.PU_KEYS:
+		game.tuning.set_value("pu_w_" + key, 0.0)
+	_expect(game.pick_powerup_type() == -1, "with every chance at 0 no power-up should spawn")
+	game.tuning.set_value("pu_w_poison", 3.0)
+	for i in 20:
+		_expect(game.pick_powerup_type() == game.PowerUp.POISON, "only POISON has a chance, so only POISON should spawn")
+	game.tuning.set_value("pu_w_booster", 1.0)
+	var counts := {}
+	for i in 4000:
+		var t: int = game.pick_powerup_type()
+		counts[t] = counts.get(t, 0) + 1
+	var share: float = counts.get(game.PowerUp.POISON, 0) / 4000.0
+	_expect(share > 0.70 and share < 0.80, "POISON at 3 vs BOOSTER at 1 should be about 75%%, got %s" % share)
+	_expect(is_equal_approx(game._powerup_share("pu_w_poison"), 75.0), "the debug menu should show 75%% for POISON")
+	_expect(not game.Upgrades.DEFS.has("grab"), "BIG GRAB is gone")
+	game.free()
+
+
+func _test_level_jingles() -> void:
+	var music := _music()
+	var win: AudioStreamWAV = music.jingle(true)
+	var lose: AudioStreamWAV = music.jingle(false)
+	_expect(win.data.size() > 8000 and lose.data.size() > 8000 and win.data != lose.data, "win and loss jingles should be distinct one-shots")
+	_expect(win.loop_mode == AudioStreamWAV.LOOP_DISABLED, "jingles play once")
+	music.render_now(1, "game")
+	music.play_jingle(true)
+	_expect(music.current_key == "" and music.jingle_player.stream == win, "a jingle should stop the music and take over")
+	music.free()
+	var game := _game()
+	game.tuning.set_value("points_per_game", 1.0)
+	game.tuning.set_value("best_of", 1.0)
+	game.music = _music()
+	_score_point(game, 1)
+	_expect(game.music.jingle_player.stream == game.music.jingle(false), "losing the level should play the loss jingle")
+	game.music.free()
 	game.free()

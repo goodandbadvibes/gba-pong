@@ -3,7 +3,7 @@ extends RefCounted
 
 const DEFS := {
 	"hive": {"name": "HIVE MIND", "price": 12, "color": Color8(248, 200, 72),
-		"desc": "YOUR TURRETS USE YOUR UPGRADES: FLAME, SLIME AND POWER HIT.",
+		"desc": "BALLS YOUR TURRETS SPEED UP ALSO GET YOUR FLAME, SLIME AND VENOM.",
 		"icon": ["01110", "10101", "11111", "10101", "01110"]},
 	"sync": {"name": "WING SYNC", "price": 12, "color": Color8(120, 200, 248),
 		"desc": "YOUR WINGMEN USE YOUR UPGRADES: FLAME, SLIME AND POWER HIT.",

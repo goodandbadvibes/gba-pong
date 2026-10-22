@@ -21,9 +21,6 @@ const DEFS := {
 	"lucky": {"name": "LUCKY FIND", "max": 3, "color": Color8(232, 120, 232),
 		"desc": "POWER UPS AND GEMS SHOW UP MORE OFTEN AND GEMS ARE WORTH MORE.",
 		"icon": ["01010", "10101", "01110", "00100", "00100"]},
-	"grab": {"name": "BIG GRAB", "max": 3, "color": Color8(248, 160, 120),
-		"desc": "YOUR BALLS COLLECT THINGS FROM FURTHER AWAY.",
-		"icon": ["10101", "10101", "11111", "11111", "01110"]},
 	"wingman": {"name": "WINGMAN", "max": 3, "color": Color8(152, 184, 248),
 		"desc": "EVERY GAME STARTS WITH AN EXTRA PADDLE PER LEVEL THAT PATROLS ON ITS OWN.",
 		"icon": ["10100", "10101", "10101", "10101", "00101"]},
@@ -37,7 +34,7 @@ const DEFS := {
 		"desc": "EVERY GAME STARTS WITH A BALL GENERATOR ON YOUR SIDE: 2 BALLS, +1 PER EXTRA LEVEL.",
 		"icon": ["11111", "10101", "11111", "10001", "11111"]},
 	"turret": {"name": "TURRET", "max": 3, "color": Color8(248, 200, 72),
-		"desc": "A TURRET PER LEVEL GUARDS YOUR SIDE AND HITS BALLS THAT COME CLOSE. IT REBUILDS ITSELF.",
+		"desc": "A TURRET PER LEVEL SPEEDS UP YOUR BALLS THAT PASS THROUGH IT. FOE BALLS DAMAGE IT. IT REBUILDS ITSELF.",
 		"icon": ["00100", "01110", "11011", "01110", "00100"]},
 }
 

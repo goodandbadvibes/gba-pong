@@ -41,7 +41,6 @@ const DRONE_H := 14
 const DRONE_LANES := 4
 const UNIT_SIZE := 6
 const UNIT_SLOTS_Y := [44.0, 116.0, 80.0, 30.0, 130.0]
-const UNIT_HIT_COOLDOWN := 0.3
 const MOMENTUM_STEP := 0.06
 const MOMENTUM_MAX := 10
 
@@ -112,7 +111,7 @@ var gems: Array[Dictionary] = []
 var gem_timer: float = 0.0
 ## Extra paddles: {side, x, y (center), dir, hp, max_hp, temp, flash}
 var drones: Array[Dictionary] = []
-## Turrets: {side, pos (center), hp, max_hp, alive, rebuild, hit_cd, temp, flash}
+## Turrets: {side, pos (center), hp, max_hp, alive, rebuild, temp, flash, inside (ball ids in reach)}
 var units: Array[Dictionary] = []
 ## Poison built up on each side; at POISON TO TRIGGER the side's paddle freezes and its allies are hurt.
 var poison: Array[float] = [0.0, 0.0]
@@ -674,7 +673,8 @@ func _round_end(winner: int) -> void:
 	_clear_field()
 	_shake(4.0)
 	bg_flash = 0.12
-	_play("win" if round_won else "lose")
+	if music:
+		music.play_jingle(round_won)
 
 
 ## The opponent gets stronger: one random upgrade per level it reaches (none on level 1).
@@ -991,8 +991,9 @@ func _collide(ball: Ball) -> bool:
 		_deflect(ball, 1, paddle_cy[1], paddle_height(1) / 2.0, "paddle")
 		paddle_flash[1] = 0.1
 		return true
-	if _collide_drones(ball) or _collide_units(ball):
+	if _collide_drones(ball):
 		return true
+	_turret_pass(ball)
 
 	_check_pickups(ball)
 
@@ -1212,7 +1213,7 @@ func spawn_unit(side: int, temp: bool) -> bool:
 	var x: float = 72.0 if side == 0 else W - 72.0
 	var hp: int = _ally_hp("unit_hp", side)
 	units.append({"side": side, "slot": slot, "pos": Vector2(x, UNIT_SLOTS_Y[slot]), "hp": hp, "max_hp": hp,
-		"alive": true, "rebuild": 0.0, "hit_cd": 0.0, "temp": temp, "flash": 0.0})
+		"alive": true, "rebuild": 0.0, "temp": temp, "flash": 0.0, "inside": {}})
 	_burst(Vector2(x, UNIT_SLOTS_Y[slot]), Vector2.ZERO, 8, PU_INFO[PowerUp.TURRET].color)
 	return true
 
@@ -1227,7 +1228,6 @@ func _update_allies(delta: float) -> void:
 			d.dir = -d.dir
 	for u in units:
 		u.flash = maxf(0.0, u.flash - delta)
-		u.hit_cd = maxf(0.0, u.hit_cd - delta)
 		if not u.alive:
 			u.rebuild -= delta
 			if u.rebuild <= 0.0:
@@ -1252,21 +1252,46 @@ func _collide_drones(ball: Ball) -> bool:
 	return false
 
 
-func _collide_units(ball: Ball) -> bool:
-	var side: int = _heading_to(ball)
+## Turrets don't hit balls. A ball entering a turret's reach is sped up if it comes from the
+## turret's side (with HIVE MIND it also gets your flame, slime and venom) and costs the turret
+## 1 HP if it comes from the other side. Each pass counts once.
+func _turret_pass(ball: Ball) -> void:
 	var reach: float = tuning.get_value("unit_range")
 	var center: Vector2 = ball.pos + Vector2.ONE * BALL / 2.0
-	for u in units:
-		if u.side != side or not u.alive or u.hit_cd > 0.0 or center.distance_to(u.pos) > reach:
+	var id: int = ball.get_instance_id()
+	for u in units.duplicate():
+		if not u.alive:
 			continue
-		_deflect(ball, side, u.pos.y, reach, "unit")
-		u.hit_cd = UNIT_HIT_COOLDOWN
-		# A short zap line from the turret to the ball.
-		for i in 6:
-			particles.append({"pos": u.pos.lerp(center, i / 5.0), "vel": Vector2.ZERO, "life": 0.12, "color": PU_INFO[PowerUp.TURRET].color})
-		_damage_unit(u)
-		return true
-	return false
+		var inside: bool = center.distance_to(u.pos) <= reach
+		if not inside:
+			u.inside.erase(id)
+			continue
+		if u.inside.has(id):
+			continue
+		u.inside[id] = true
+		if ball.last_touch == u.side:
+			_turret_boost(u, ball, center)
+		elif ball.last_touch == 1 - u.side:
+			_zap(u.pos, center, Palette.BOSS)
+			_damage_unit(u)
+
+
+func _turret_boost(u: Dictionary, ball: Ball, center: Vector2) -> void:
+	ball.vel *= tuning.get_value("unit_boost")
+	if u.side == 1 or run.has_relic("hive"):
+		ball.flame = ball.flame or level_of(u.side, "flame") > 0
+		ball.slime = ball.slime or level_of(u.side, "slime") > 0
+		ball.venom = ball.venom or level_of(u.side, "venom") > 0
+	u.flash = 0.12
+	_zap(u.pos, center, PU_INFO[PowerUp.TURRET].color)
+	_burst(center, ball.vel.normalized(), 6, SPARK)
+	_play("zap")
+
+
+## A short dotted line from a turret to a ball.
+func _zap(from: Vector2, to: Vector2, color: Color) -> void:
+	for i in 6:
+		particles.append({"pos": from.lerp(to, i / 5.0), "vel": Vector2.ZERO, "life": 0.12, "color": color})
 
 
 func _damage_drone(d: Dictionary) -> void:
@@ -1328,8 +1353,9 @@ func _update_pickups(delta: float) -> void:
 		pu_timer = minf(pu_timer, _pu_interval() * 1.3)
 		if pu_timer <= 0.0:
 			pu_timer = _pu_interval() * rng.randf_range(0.7, 1.3)
-			if powerups.size() < int(tuning.get_value("pu_max")):
-				spawn_powerup(rng.randi_range(0, PowerUp.size() - 1))
+			var type: int = pick_powerup_type()
+			if type >= 0 and powerups.size() < int(tuning.get_value("pu_max")):
+				spawn_powerup(type)
 	gem_timer -= delta
 	if gem_timer <= 0.0:
 		gem_timer = _gem_interval() * rng.randf_range(0.7, 1.3)
@@ -1355,6 +1381,29 @@ func _apply_magnet(delta: float) -> void:
 				item.pos = item.pos.move_toward(item.pos + (center - item_center), pull)
 
 
+## Tuning keys of the power-up chance table, in PowerUp order.
+const PU_KEYS := ["fast_ball", "multi_ball", "big_paddle", "shrink_foe", "slow_foe", "wingman", "turret", "poison", "booster", "generator"]
+
+
+func powerup_weight(type: int) -> float:
+	return tuning.get_value("pu_w_" + PU_KEYS[type])
+
+
+## A power-up type drawn from the chance table, or -1 when every chance is 0.
+func pick_powerup_type() -> int:
+	var total: float = 0.0
+	for type in PowerUp.size():
+		total += powerup_weight(type)
+	if total <= 0.0:
+		return -1
+	var roll: float = rng.randf() * total
+	for type in PowerUp.size():
+		roll -= powerup_weight(type)
+		if roll < 0.0:
+			return type
+	return PowerUp.size() - 1
+
+
 ## Places a power-up somewhere in the middle of the court.
 func spawn_powerup(type: int, at: Vector2 = Vector2(-1.0, -1.0)) -> void:
 	if at.x < 0.0:
@@ -1374,11 +1423,9 @@ func _random_field_spot(size: float) -> Vector2:
 	return Vector2(rng.randf_range(80.0, W - 80.0 - size), rng.randf_range(TOP + 10.0, BOTTOM - 10.0 - size))
 
 
-## Collision box for a pickup: POWER UP HITBOX around the item's center, bigger with BIG GRAB.
+## Collision box for a pickup: POWER UP HITBOX around the item's center.
 func pickup_rect(item_pos: Vector2, item_size: float, ball: Ball) -> Rect2:
 	var box: float = tuning.get_value("pu_hitbox")
-	if ball.last_touch >= 0:
-		box += 4.0 * up(ball.last_touch, "grab")
 	var center: Vector2 = item_pos + Vector2.ONE * item_size / 2.0
 	return Rect2(center - Vector2.ONE * box / 2.0, Vector2.ONE * box)
 
@@ -1528,6 +1575,14 @@ func _menu_items() -> Array[Dictionary]:
 	items.append({"kind": "reset_save", "label": "RESET BEST AND GEMS"})
 	items.append({"kind": "close", "label": "CLOSE"})
 	return items
+
+
+## Percent of power-ups a chance-table row gets, from all the weights.
+func _powerup_share(key: String) -> float:
+	var total: float = 0.0
+	for k in PU_KEYS:
+		total += tuning.get_value("pu_w_" + k)
+	return 100.0 * tuning.get_value(key) / total if total > 0.0 else 0.0
 
 
 func _toggle_menu() -> void:
@@ -2005,6 +2060,8 @@ func _draw_menu() -> void:
 		PixelFont.draw(self, item.label, 9, y, 1, label_color)
 		if item.kind == "value":
 			var text: String = tuning.format(item.key)
+			if item.key.begins_with("pu_w_"):
+				text += "  %d%%" % roundi(_powerup_share(item.key))
 			if selected:
 				text = "< " + text + " >"
 			PixelFont.draw(self, text, W - 4, y, 1, side_col[0] if selected else color, PixelFont.Align.RIGHT)

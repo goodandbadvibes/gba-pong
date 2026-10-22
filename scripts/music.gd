@@ -49,6 +49,8 @@ const TRACKS := {
 
 var tuning: Tuning
 var player: AudioStreamPlayer
+var jingle_player: AudioStreamPlayer
+var _jingles: Dictionary = {}
 var current_key: String = ""
 ## The loop the current screen wants; empty once it plays.
 var wanted_key: String = ""
@@ -68,6 +70,9 @@ func _ensure_player() -> void:
 	if player == null:
 		player = AudioStreamPlayer.new()
 		add_child(player)
+	if jingle_player == null:
+		jingle_player = AudioStreamPlayer.new()
+		add_child(jingle_player)
 
 
 func _process(_delta: float) -> void:
@@ -76,6 +81,7 @@ func _process(_delta: float) -> void:
 	_ensure_player()
 	var volume: float = tuning.get_value("music_volume") / 100.0
 	player.volume_db = linear_to_db(volume * 0.8) if volume > 0.0 else -80.0
+	jingle_player.volume_db = player.volume_db
 	if _job.is_empty():
 		if _queue.is_empty():
 			return
@@ -324,3 +330,84 @@ func render_now(intensity: int, track: String = "game", games: int = 0) -> Audio
 		if _work(1 << 22):
 			_finish_job()
 	return player.stream
+
+
+# ---------------------------------------------------------------- jingles
+
+## Notes as [frequency Hz, start s, length s, wave, duty, volume]. Same channels as the music.
+const JINGLES := {
+	"win": [
+		[523.25, 0.00, 0.11, "square", 0.25, 0.20], [659.25, 0.12, 0.11, "square", 0.25, 0.20],
+		[783.99, 0.24, 0.11, "square", 0.25, 0.20], [1046.5, 0.36, 0.60, "square", 0.25, 0.22],
+		[659.25, 0.36, 0.60, "square", 0.125, 0.10], [783.99, 0.36, 0.60, "square", 0.125, 0.10],
+		[130.81, 0.00, 0.34, "wave", 0.5, 0.40], [98.00, 0.12, 0.20, "wave", 0.5, 0.30],
+		[130.81, 0.36, 0.60, "wave", 0.5, 0.45], [9000.0, 0.36, 0.06, "noise", 0.5, 0.15],
+	],
+	"lose": [
+		[392.00, 0.00, 0.24, "square", 0.5, 0.18], [369.99, 0.26, 0.24, "square", 0.5, 0.18],
+		[349.23, 0.52, 0.24, "square", 0.5, 0.18], [329.63, 0.78, 0.75, "square", 0.5, 0.18],
+		[130.81, 0.00, 0.76, "wave", 0.5, 0.40], [65.41, 0.78, 0.75, "wave", 0.5, 0.45],
+	],
+}
+
+
+## Stops the music and plays the level win or loss jingle. The next screen starts its own track.
+func play_jingle(win: bool) -> void:
+	_ensure_player()
+	player.stop()
+	current_key = ""
+	wanted_key = ""
+	jingle_player.stream = jingle(win)
+	if jingle_player.is_inside_tree():
+		jingle_player.play()
+
+
+func jingle(win: bool) -> AudioStreamWAV:
+	var name: String = "win" if win else "lose"
+	if not _jingles.has(name):
+		_jingles[name] = _synth(JINGLES[name])
+	return _jingles[name]
+
+
+## Renders a short one-shot from note rows.
+static func _synth(notes: Array) -> AudioStreamWAV:
+	var length: float = 0.0
+	for n in notes:
+		length = maxf(length, n[1] + n[2])
+	var buf := PackedFloat32Array()
+	buf.resize(int((length + 0.1) * RATE))
+	for n in notes:
+		var start: int = int(n[1] * RATE)
+		var count: int = int(n[2] * RATE)
+		var phase: float = 0.0
+		var lfsr: int = 0x4000
+		var noise: float = 1.0
+		for k in count:
+			var prev: float = phase
+			# The last note of the loss jingle sags in pitch, like a sad trombone.
+			var bend: float = 1.0 - 0.06 * float(k) / count if n[3] == "square" and n[2] > 0.5 and n[4] == 0.5 else 1.0
+			phase += n[0] * bend / RATE
+			var frac: float = phase - floorf(phase)
+			var v: float
+			match n[3]:
+				"square":
+					v = 1.0 if frac < n[4] else -1.0
+				"wave":
+					v = roundf((1.0 - 4.0 * absf(frac - 0.5)) * 7.5) / 7.5
+				_:
+					if floorf(phase) != floorf(prev):
+						var bit: int = (lfsr ^ (lfsr >> 1)) & 1
+						lfsr = (lfsr >> 1) | (bit << 14)
+						noise = 1.0 if lfsr & 1 else -1.0
+					v = noise
+			var release: float = clampf((count - k) / (count * 0.1 + 1.0), 0.0, 1.0)
+			buf[start + k] += v * n[5] * release
+	var data := PackedByteArray()
+	data.resize(buf.size())
+	for i in buf.size():
+		data[i] = int(clampf(buf[i], -1.0, 1.0) * 110.0) & 0xFF
+	var wav := AudioStreamWAV.new()
+	wav.format = AudioStreamWAV.FORMAT_8_BITS
+	wav.mix_rate = RATE
+	wav.data = data
+	return wav
