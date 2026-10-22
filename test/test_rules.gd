@@ -19,12 +19,18 @@ func _initialize() -> void:
 	_test_multi_ball_respects_max()
 	_test_goal_with_balls_left_keeps_playing()
 	_test_effects_expire()
+	_test_tap_starts_match()
+	_test_swipe_moves_paddle()
+	_test_slow_effect_scales_swipe()
+	_test_touch_buttons()
+	_test_tap_score_opens_menu_and_bar_buttons_work()
 	print("test_rules: %s" % ("FAILED" if failures else "all passed"))
 	quit(1 if failures else 0)
 
 
 func _game() -> Node2D:
 	var game: Node2D = load("res://scenes/main.gd").new()
+	game.persist_tuning = false
 	root.add_child(game)
 	game.tuning.reset()
 	game.tuning.set_value("powerups", 0.0)
@@ -192,4 +198,90 @@ func _test_effects_expire() -> void:
 	_expect(game.paddle_speed(0) > game.tuning.get_value("player_speed"), "QUICK PADDLE should speed up the paddle")
 	_step(game, 150)
 	_expect(not game.effects[0].has("fast"), "effects should wear off after the effect time")
+	game.free()
+
+
+func _touch(game: Node2D, pos: Vector2, pressed: bool, index: int = 0) -> void:
+	var event := InputEventScreenTouch.new()
+	event.index = index
+	event.position = pos
+	event.pressed = pressed
+	game._input(event)
+
+
+func _drag(game: Node2D, pos: Vector2, relative: Vector2, index: int = 0) -> void:
+	var event := InputEventScreenDrag.new()
+	event.index = index
+	event.position = pos
+	event.relative = relative
+	game._input(event)
+
+
+func _test_tap_starts_match() -> void:
+	var game: Node2D = load("res://scenes/main.gd").new()
+	game.persist_tuning = false
+	root.add_child(game)
+	game.tuning.reset()
+	_touch(game, Vector2(60.0, 100.0), true)
+	_expect(game.state == game.State.SERVE, "a tap on the title screen should start a match")
+	game.free()
+
+
+func _test_swipe_moves_paddle() -> void:
+	var game := _game()
+	game.tuning.set_value("swipe_speed", 2.0)
+	game.paddle_cy[0] = 60.0
+	_touch(game, Vector2(60.0, 100.0), true)
+	_drag(game, Vector2(60.0, 110.0), Vector2(0.0, 10.0))
+	_step(game, 1)
+	_expect(is_equal_approx(game.paddle_cy[0], 80.0), "a 10px swipe at speed 2 should move the paddle 20px, got %s" % game.paddle_cy[0])
+	_touch(game, Vector2(60.0, 110.0), false)
+	_drag(game, Vector2(60.0, 120.0), Vector2(0.0, 10.0))
+	_step(game, 1)
+	_expect(is_equal_approx(game.paddle_cy[0], 80.0), "dragging after lifting the finger should do nothing")
+	game.free()
+
+
+func _test_slow_effect_scales_swipe() -> void:
+	var game := _game()
+	game.tuning.set_value("swipe_speed", 1.0)
+	game.paddle_cy[0] = 60.0
+	game.apply_powerup(game.PowerUp.SLOW_FOE, 1)
+	_touch(game, Vector2(60.0, 100.0), true)
+	_drag(game, Vector2(60.0, 110.0), Vector2(0.0, 10.0))
+	_step(game, 6)  # past the pickup's hitstop freeze; the swipe is applied once play resumes
+	_expect(is_equal_approx(game.paddle_cy[0], 66.0), "SLOW FOE should scale swipes to 0.6x, got %s" % game.paddle_cy[0])
+	game.free()
+
+
+func _test_touch_buttons() -> void:
+	var game := _game()
+	game.tuning.set_value("touch_buttons", 1.0)
+	game.paddle_cy[0] = 80.0
+	_touch(game, game.TOUCH_DOWN.get_center(), true, 1)
+	_expect(game.button_touches.get(1) == 1.0, "holding the down button should register as down")
+	game._process(1.0 / 60.0)
+	_expect(game.paddle_cy[0] > 80.0, "holding the down button should move the paddle down")
+	_touch(game, game.TOUCH_DOWN.get_center(), false, 1)
+	_expect(game.button_touches.is_empty(), "releasing should stop the button")
+	game.tuning.set_value("touch_buttons", 0.0)
+	_touch(game, game.TOUCH_DOWN.get_center(), true, 2)
+	_expect(game.button_touches.is_empty(), "with on-screen buttons off, that spot is just a swipe")
+	game.free()
+
+
+func _test_tap_score_opens_menu_and_bar_buttons_work() -> void:
+	var game := _game()
+	_touch(game, Vector2(game.W / 2.0, 5.0), true)
+	_expect(game.menu_open, "tapping the score should open the debug menu")
+	_touch(game, Vector2(game.W / 2.0, 5.0), false)
+	var before: float = game.tuning.get_value("ball_start")
+	var plus_x: float = (game.W / 6.0) * 3.5
+	_touch(game, Vector2(plus_x, game.H - 4.0), true)
+	_expect(game.tuning.get_value("ball_start") > before, "the + button should raise the selected value")
+	_touch(game, Vector2(9.0, 12.0 + 7.0 * 2 + 2.0), true)
+	_expect(game.menu_index == 2, "tapping a row should select it, got %d" % game.menu_index)
+	var close_x: float = (game.W / 6.0) * 5.5
+	_touch(game, Vector2(close_x, game.H - 4.0), true)
+	_expect(not game.menu_open, "the CLOSE button should close the menu")
 	game.free()

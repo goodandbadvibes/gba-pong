@@ -3,7 +3,11 @@
 Pong at Game Boy Advance limits: 240x160, integer-scaled pixels, a small 15-bit palette,
 a 3x5 pixel font and square-wave blips. Made with Godot 4.7.2.
 
-**Controls:** Up / Down arrows (or a gamepad d-pad). First to 7 wins.
+**Play online:** https://tuomassoukka-prog.github.io/gba-pong/
+
+**Controls:** Up / Down arrows (or a gamepad d-pad). On a phone or tablet, swipe anywhere to move
+your paddle and tap to start; turn on ON SCREEN BUTTONS in the debug menu for hold-to-move
+up/down buttons. First to 7 wins.
 
 **Power-ups** spawn in the middle of the court. A ball collects one when it flies through it,
 for whoever touched that ball last (a freshly served ball collects nothing):
@@ -21,7 +25,8 @@ Paddle effects last 8 seconds (tunable) and show as icons with timers in the top
 With several balls in play, each ball that gets past a paddle scores, and the next serve
 waits until the last ball is gone.
 
-**Debug menu:** F1 or ` (backtick). Up/Down pick, Left/Right change (Shift for 5 steps),
+**Debug menu:** F1 or ` (backtick), or tap the score on a touch screen (the menu then shows
+tappable UP / DOWN / - / + / OK / CLOSE buttons). Up/Down pick, Left/Right change (Shift for 5 steps),
 Enter to spawn a power-up or reset. Changes are saved (in the browser for the web build).
 
 ## Play
@@ -40,6 +45,12 @@ npx http-server build/web -p 8139      # in PowerShell: npx.cmd http-server buil
 ```
 
 Then open http://localhost:8139.
+
+Publish to GitHub Pages (after exporting):
+
+```
+node tools/deploy-pages.mjs
+```
 
 ## Develop
 

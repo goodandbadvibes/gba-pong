@@ -52,6 +52,8 @@ const EFFECT_ICON := {
 }
 
 var tuning := Tuning.new()
+## Off in tests, so they neither load nor overwrite the player's saved settings.
+var persist_tuning: bool = true
 var state: State = State.TITLE
 var paddle_cy: Array[float] = [H / 2.0, H / 2.0]
 var effects: Array[Dictionary] = [{}, {}]
@@ -79,12 +81,19 @@ var menu_open: bool = false
 var menu_index: int = 0
 var menu_scroll: int = 0
 
+# Touch: one finger swipes the paddle; on-screen buttons are optional (debug menu).
+var touch_seen: bool = false
+var swipe_index: int = -1
+var pending_swipe: float = 0.0
+var button_touches: Dictionary = {}
+
 var sfx := {}
 
 
 func _ready() -> void:
 	rng.randomize()
-	tuning.load_saved()
+	if persist_tuning:
+		tuning.load_saved()
 	sfx["paddle"] = _make_blip(880.0, 0.05)
 	sfx["wall"] = _make_blip(440.0, 0.03)
 	sfx["score"] = _make_blip(196.0, 0.2)
@@ -99,21 +108,102 @@ func _process(delta: float) -> void:
 		if state == State.TITLE or state == State.OVER:
 			if Input.is_action_just_pressed("ui_up") or Input.is_action_just_pressed("ui_down"):
 				start_match()
-		simulate(delta, Input.get_axis("ui_up", "ui_down"))
+		var touch_dir: float = 0.0
+		for dir in button_touches.values():
+			touch_dir += dir
+		simulate(delta, clampf(Input.get_axis("ui_up", "ui_down") + touch_dir, -1.0, 1.0))
 	queue_redraw()
 
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch or event is InputEventScreenDrag:
+		_touch(event)
+		_consume()
+		return
 	var key := event as InputEventKey
 	if key == null or not key.pressed:
 		return
 	if key.keycode == KEY_F1 or key.keycode == KEY_QUOTELEFT:
 		if not key.echo:
 			_toggle_menu()
-		get_viewport().set_input_as_handled()
+		_consume()
 	elif menu_open:
 		_menu_key(key)
-		get_viewport().set_input_as_handled()
+		_consume()
+
+
+## Marks the event handled. Guarded so tests can feed input to a node outside a viewport.
+func _consume() -> void:
+	var viewport := get_viewport()
+	if viewport:
+		viewport.set_input_as_handled()
+
+
+# ---------------------------------------------------------------- touch
+
+const DEBUG_HOTSPOT := Rect2(W / 2 - 32, 0, 64, TOP)
+const TOUCH_UP := Rect2(W - 64, TOP + 8, 30, 30)
+const TOUCH_DOWN := Rect2(W - 64, BOTTOM - 38, 30, 30)
+const MENU_BAR_H := 12
+const MENU_BUTTONS := ["UP", "DOWN", "-", "+", "OK", "CLOSE"]
+
+
+func touch_buttons_on() -> bool:
+	return tuning.get_value("touch_buttons") >= 1.0
+
+
+## Positions arrive in game pixels (240x160) because the viewport stretch transforms them.
+func _touch(event: InputEvent) -> void:
+	touch_seen = true
+	var drag := event as InputEventScreenDrag
+	if drag:
+		if drag.index == swipe_index and not menu_open:
+			pending_swipe += drag.relative.y * tuning.get_value("swipe_speed")
+		return
+
+	var touch := event as InputEventScreenTouch
+	if not touch.pressed:
+		button_touches.erase(touch.index)
+		if touch.index == swipe_index:
+			swipe_index = -1
+		return
+	if menu_open:
+		_menu_touch(touch.position)
+		return
+	if DEBUG_HOTSPOT.has_point(touch.position):
+		_toggle_menu()
+		return
+	if touch_buttons_on() and (state == State.SERVE or state == State.PLAY):
+		if TOUCH_UP.grow(4).has_point(touch.position):
+			button_touches[touch.index] = -1.0
+			return
+		if TOUCH_DOWN.grow(4).has_point(touch.position):
+			button_touches[touch.index] = 1.0
+			return
+	if state == State.TITLE or state == State.OVER:
+		start_match()
+	swipe_index = touch.index
+
+
+func _menu_touch(pos: Vector2) -> void:
+	if pos.y >= H - MENU_BAR_H:
+		var button: int = clampi(int(pos.x / (W / MENU_BUTTONS.size())), 0, MENU_BUTTONS.size() - 1)
+		_menu_action(["up", "down", "dec", "inc", "ok", "close"][button])
+		return
+	var row: int = menu_scroll + int((pos.y - 11.0) / 7.0)
+	if pos.y < 11.0 or row >= _menu_items().size():
+		return
+	if row != menu_index:
+		menu_index = row
+		_play("menu")
+	elif _menu_items()[row].kind == "value":
+		# Tap the right half of the selected row's value: right quarter raises, the quarter before lowers.
+		if pos.x >= W * 0.75:
+			_menu_action("inc")
+		elif pos.x >= W * 0.5:
+			_menu_action("dec")
+	else:
+		_menu_action("ok")
 
 
 # ---------------------------------------------------------------- simulation
@@ -126,6 +216,9 @@ func simulate(delta: float, dir: float) -> void:
 		return
 
 	_move_paddle(0, dir * paddle_speed(0) * delta)
+	# Swipes move the paddle directly, scaled by speed effects so QUICK/SLOW still matter.
+	_move_paddle(0, pending_swipe * paddle_speed(0) / tuning.get_value("player_speed"))
+	pending_swipe = 0.0
 	_update_cpu(delta)
 
 	match state:
@@ -433,7 +526,11 @@ func _menu_items() -> Array[Dictionary]:
 
 func _toggle_menu() -> void:
 	menu_open = not menu_open
-	if not menu_open:
+	# Fingers that were down when the menu opened or closed must not keep steering.
+	button_touches.clear()
+	swipe_index = -1
+	pending_swipe = 0.0
+	if not menu_open and persist_tuning:
 		tuning.save()
 		for side in 2:
 			_move_paddle(side, 0.0)
@@ -441,18 +538,35 @@ func _toggle_menu() -> void:
 
 
 func _menu_key(key: InputEventKey) -> void:
-	var items := _menu_items()
-	var item: Dictionary = items[menu_index]
 	var steps: int = 5 if key.shift_pressed else 1
 	match key.keycode:
 		KEY_UP:
-			menu_index = wrapi(menu_index - 1, 0, items.size())
+			_menu_action("up")
 		KEY_DOWN:
-			menu_index = wrapi(menu_index + 1, 0, items.size())
-		KEY_LEFT, KEY_RIGHT:
-			if item.kind == "value":
-				tuning.nudge(item.key, steps if key.keycode == KEY_RIGHT else -steps)
+			_menu_action("down")
+		KEY_LEFT:
+			_menu_action("dec", steps)
+		KEY_RIGHT:
+			_menu_action("inc", steps)
 		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
+			_menu_action("ok")
+		KEY_ESCAPE:
+			_menu_action("close")
+
+
+## Shared by keys and touch: up, down, dec, inc, ok, close.
+func _menu_action(action: String, steps: int = 1) -> void:
+	var items := _menu_items()
+	var item: Dictionary = items[menu_index]
+	match action:
+		"up":
+			menu_index = wrapi(menu_index - 1, 0, items.size())
+		"down":
+			menu_index = wrapi(menu_index + 1, 0, items.size())
+		"dec", "inc":
+			if item.kind == "value":
+				tuning.nudge(item.key, steps if action == "inc" else -steps)
+		"ok":
 			match item.kind:
 				"spawn":
 					spawn_powerup(item.type)
@@ -463,10 +577,8 @@ func _menu_key(key: InputEventKey) -> void:
 				"close":
 					_toggle_menu()
 					return
-		KEY_ESCAPE:
+		"close":
 			_toggle_menu()
-			return
-		_:
 			return
 	_play("menu")
 
@@ -490,6 +602,10 @@ func _draw() -> void:
 	_draw_score(1, W / 2 + 19)
 	_draw_effect_icons(0)
 	_draw_effect_icons(1)
+
+	if touch_buttons_on() and (state == State.SERVE or state == State.PLAY):
+		_draw_touch_button(TOUCH_UP, true, button_touches.values().has(-1.0))
+		_draw_touch_button(TOUCH_DOWN, false, button_touches.values().has(1.0))
 
 	for pu in powerups:
 		if pu.life > 2.0 or fmod(pu.life, 0.2) > 0.1:
@@ -515,13 +631,14 @@ func _draw() -> void:
 		State.TITLE:
 			PixelFont.draw(self, "GBA PONG", W / 2, 46, 3, WHITE, PixelFont.Align.CENTER)
 			if fmod(blink, 0.8) < 0.5:
-				PixelFont.draw(self, "PRESS UP OR DOWN", W / 2, 96, 1, MID, PixelFont.Align.CENTER)
-			PixelFont.draw(self, "F1 DEBUG", W / 2, 140, 1, DIM, PixelFont.Align.CENTER)
+				PixelFont.draw(self, "PRESS UP OR DOWN OR TAP", W / 2, 96, 1, MID, PixelFont.Align.CENTER)
+			PixelFont.draw(self, "SWIPE TO MOVE ON TOUCH SCREENS", W / 2, 110, 1, DIM, PixelFont.Align.CENTER)
+			PixelFont.draw(self, "DEBUG: F1 OR TAP THE SCORE", W / 2, 140, 1, DIM, PixelFont.Align.CENTER)
 		State.OVER:
 			var won: bool = scores[0] > scores[1]
 			PixelFont.draw(self, "YOU WIN" if won else "CPU WINS", W / 2, 55, 2, SIDE_COL[0] if won else SIDE_COL[1], PixelFont.Align.CENTER)
 			if fmod(blink, 0.8) < 0.5:
-				PixelFont.draw(self, "PRESS UP OR DOWN", W / 2, 96, 1, MID, PixelFont.Align.CENTER)
+				PixelFont.draw(self, "PRESS UP OR DOWN OR TAP", W / 2, 96, 1, MID, PixelFont.Align.CENTER)
 
 	for popup in popups:
 		# Keep the whole label on screen even when the pickup happened near an edge.
@@ -560,6 +677,21 @@ func _draw_paddle(side: int) -> void:
 		var effect: String = effects[side].keys()[0]
 		var stripe_x: float = rect.position.x + (PADDLE_W - 1 if side == 0 else 0)
 		draw_rect(Rect2(stripe_x, rect.position.y, 1, rect.size.y), PU_INFO[EFFECT_ICON[effect]].color)
+
+
+## Outlined square with a pixel arrow; filled while held.
+func _draw_touch_button(rect: Rect2, up: bool, held: bool) -> void:
+	var color: Color = MID if held else DIM
+	if held:
+		draw_rect(rect, DIM)
+	draw_rect(Rect2(rect.position, Vector2(rect.size.x, 1)), color)
+	draw_rect(Rect2(rect.position + Vector2(0, rect.size.y - 1), Vector2(rect.size.x, 1)), color)
+	draw_rect(Rect2(rect.position, Vector2(1, rect.size.y)), color)
+	draw_rect(Rect2(rect.position + Vector2(rect.size.x - 1, 0), Vector2(1, rect.size.y)), color)
+	var center: Vector2 = (rect.position + rect.size / 2.0).floor()
+	for row in 6:
+		var half: int = row if up else 5 - row
+		draw_rect(Rect2(center.x - half, center.y - 3 + row, half * 2 + 1, 1), WHITE if held else MID)
 
 
 func _draw_powerup(type: int, pos: Vector2) -> void:
@@ -627,6 +759,14 @@ func _draw_menu() -> void:
 				text = "< " + text + " >"
 			PixelFont.draw(self, text, W - 4, y, 1, SIDE_COL[0] if selected else color, PixelFont.Align.RIGHT)
 
+	if touch_seen:
+		# Tappable button bar instead of the keyboard hint.
+		var bw: int = W / MENU_BUTTONS.size()
+		for i in MENU_BUTTONS.size():
+			var rect := Rect2(i * bw, H - MENU_BAR_H, bw - 1, MENU_BAR_H)
+			draw_rect(rect, DIM)
+			PixelFont.draw(self, MENU_BUTTONS[i], int(rect.position.x + bw / 2), H - MENU_BAR_H + 4, 1, WHITE, PixelFont.Align.CENTER)
+		return
 	draw_rect(Rect2(0, H - 9, W, 9), DIM)
 	var hint: String = "UP/DOWN PICK  LEFT/RIGHT CHANGE  SHIFT X5"
 	if items[menu_index].kind != "value":

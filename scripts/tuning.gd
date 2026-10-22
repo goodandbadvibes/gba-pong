@@ -22,6 +22,8 @@ const DEFS := [
 	{"key": "max_balls", "label": "MAX BALLS", "default": 5.0, "min": 1.0, "max": 12.0, "step": 1.0},
 	{"key": "hitstop", "label": "HITSTOP SEC", "default": 0.05, "min": 0.0, "max": 0.2, "step": 0.01},
 	{"key": "shake", "label": "SCREEN SHAKE", "default": 1.0, "min": 0.0, "max": 3.0, "step": 0.25},
+	{"key": "swipe_speed", "label": "SWIPE SPEED", "default": 1.5, "min": 0.5, "max": 4.0, "step": 0.25},
+	{"key": "touch_buttons", "label": "ON SCREEN BUTTONS", "default": 0.0, "min": 0.0, "max": 1.0, "step": 1.0},
 ]
 
 var values: Dictionary = {}
