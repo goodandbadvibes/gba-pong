@@ -7,6 +7,7 @@ const PixelFont := preload("res://scripts/pixel_font.gd")
 const Upgrades := preload("res://scripts/upgrades.gd")
 const Relics := preload("res://scripts/relics.gd")
 const Run := preload("res://scripts/run.gd")
+const BuildInfo := preload("res://scripts/build_info.gd")
 
 const W := Palette.W
 const H := Palette.H
@@ -45,6 +46,7 @@ static func draw_title(g: Node2D) -> void:
 	PixelFont.draw(g, hint, W / 2, 126, 1, Palette.DIM, CENTER)
 	PixelFont.draw(g, "SWIPE TO MOVE ON TOUCH SCREENS", W / 2, 136, 1, Palette.DIM, CENTER)
 	PixelFont.draw(g, "DEBUG: F1 OR TAP TOP CENTER", W / 2, 148, 1, Palette.DIM, CENTER)
+	PixelFont.draw(g, "BUILD " + BuildInfo.VERSION.to_upper(), W - 2, 2, 1, Palette.DIM, RIGHT)
 
 
 static func title_item_at(pos: Vector2, count: int) -> int:
@@ -232,6 +234,7 @@ static func draw_pause(g: Node2D) -> void:
 	g.draw_rect(PAUSE_BOX, Palette.BG)
 	_outline(g, PAUSE_BOX, Palette.MID)
 	PixelFont.draw(g, "PAUSED", W / 2, int(PAUSE_BOX.position.y) + 6, 2, Palette.WHITE, CENTER)
+	PixelFont.draw(g, "BUILD " + BuildInfo.VERSION.to_upper(), W / 2, int(PAUSE_BOX.end.y) + 3, 1, Palette.DIM, CENTER)
 	var items: Array = g.pause_items()
 	for i in items.size():
 		var y: int = PAUSE_ROW_Y + i * ROW_H

@@ -26,26 +26,22 @@ const LAYERS := ["pulse", "bass", "hats", "arp", "lead"]
 ## The intensity at which each game-track layer joins when it is set to AUTO.
 const LAYER_FROM := {"pulse": 0, "bass": 1, "hats": 2, "arp": 3, "lead": 4}
 
-## Per track: bar roots (Hz), chord tones (semitones), bass steps and length, how often the pulse,
-## hats and arpeggio play, whether the bass bounces an octave, the lead line ([step, MIDI note,
-## steps]) and, for map and shop, a fixed set of layers.
-const TRACKS := {
-	"game": {"roots": [110.0, 87.307], "chords": [[0, 3, 7, 12], [0, 4, 7, 12]],
-		"bass_steps": [0, 3, 6, 8, 11, 14], "bass_len": 1.8, "bass_bounce": false,
-		"pulse_every": 4, "hats_every": 4, "arp_every": 1,
-		"lead": [[0, 76, 4], [6, 74, 2], [8, 72, 4], [14, 69, 2], [16, 72, 4], [22, 69, 2], [24, 65, 6]]},
-	"map": {"roots": [73.416, 58.27], "chords": [[0, 3, 7, 12], [0, 4, 7, 12]],
-		"bass_steps": [0, 8], "bass_len": 7.5, "bass_bounce": false,
-		"pulse_every": 16, "hats_every": 0, "arp_every": 2,
-		"lead": [[0, 74, 6], [8, 72, 4], [12, 69, 4], [16, 70, 6], [24, 69, 8]],
-		"layers": ["pulse", "bass", "arp", "lead"]},
-	"shop": {"roots": [65.406, 97.999], "chords": [[0, 4, 7, 12], [0, 4, 7, 10]],
-		"bass_steps": [0, 4, 8, 12], "bass_len": 1.6, "bass_bounce": true,
-		"pulse_every": 8, "hats_every": 4, "arp_every": 1,
-		"lead": [[0, 72, 2], [2, 76, 2], [4, 79, 2], [6, 76, 2], [8, 77, 4], [12, 76, 4],
-			[16, 74, 2], [18, 77, 2], [20, 79, 2], [22, 77, 2], [24, 76, 6]],
-		"layers": ["pulse", "bass", "hats", "arp", "lead"]},
-}
+## Tracks and jingles are loaded from content/music.cfg (see the notes at the top of that file).
+const Content := preload("res://scripts/content.gd")
+static var _data: Dictionary = Content.table("music")
+## Per track: bar roots, chords, bass steps and length, pulse/hats/arp spacing, lead line, layers.
+static var TRACKS: Dictionary = _pick(false)
+## Per jingle ("win", "lose"): [frequency Hz, start s, length s, wave, pulse width, volume] rows.
+static var JINGLES: Dictionary = _pick(true)
+
+
+static func _pick(jingles: bool) -> Dictionary:
+	var out: Dictionary = {}
+	for section in _data:
+		if section.begins_with("jingle_") == jingles:
+			out[section.trim_prefix("jingle_") if jingles else section] = _data[section].notes if jingles else _data[section]
+	return out
+
 
 var tuning: Tuning
 var player: AudioStreamPlayer
@@ -333,23 +329,6 @@ func render_now(intensity: int, track: String = "game", games: int = 0) -> Audio
 
 
 # ---------------------------------------------------------------- jingles
-
-## Notes as [frequency Hz, start s, length s, wave, duty, volume]. Same channels as the music.
-const JINGLES := {
-	"win": [
-		[523.25, 0.00, 0.11, "square", 0.25, 0.20], [659.25, 0.12, 0.11, "square", 0.25, 0.20],
-		[783.99, 0.24, 0.11, "square", 0.25, 0.20], [1046.5, 0.36, 0.60, "square", 0.25, 0.22],
-		[659.25, 0.36, 0.60, "square", 0.125, 0.10], [783.99, 0.36, 0.60, "square", 0.125, 0.10],
-		[130.81, 0.00, 0.34, "wave", 0.5, 0.40], [98.00, 0.12, 0.20, "wave", 0.5, 0.30],
-		[130.81, 0.36, 0.60, "wave", 0.5, 0.45], [9000.0, 0.36, 0.06, "noise", 0.5, 0.15],
-	],
-	"lose": [
-		[392.00, 0.00, 0.24, "square", 0.5, 0.18], [369.99, 0.26, 0.24, "square", 0.5, 0.18],
-		[349.23, 0.52, 0.24, "square", 0.5, 0.18], [329.63, 0.78, 0.75, "square", 0.5, 0.18],
-		[130.81, 0.00, 0.76, "wave", 0.5, 0.40], [65.41, 0.78, 0.75, "wave", 0.5, 0.45],
-	],
-}
-
 
 ## Stops the music and plays the level win or loss jingle. The next screen starts its own track.
 func play_jingle(win: bool) -> void:

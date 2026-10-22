@@ -96,6 +96,24 @@ difficulty per level, boss strength, power-up hitbox, upgrade timings and more),
 or lose the current round, add any upgrade, spawn power-ups or gems, and reset settings or saved
 progress. Settings and progress are saved (in the browser for the web build).
 
+## Editing content
+
+Everything players see as content lives in plain text files in `content/`, each with notes at the
+top explaining every field:
+
+| File | What's in it |
+|---|---|
+| `content/powerups.cfg` | every power-up: name, color, icon, description and its effect numbers |
+| `content/upgrades.cfg` | every upgrade: card name, max level, color, card text, icon and effect numbers |
+| `content/relics.cfg` | every relic: name, price, color, card text, icon and effect numbers |
+| `content/opponents.cfg` | opponent names and colors, boss names and the boss color |
+| `content/music.cfg` | the game, map and shop tracks and the win/loss jingles |
+
+Change a name, text, color, price, icon or number, save, and run the game (or export and deploy).
+The `[section]` names are ids the code is wired to: rename the `name` line, not the section.
+New sections don't add new items; new items need code. Tunable settings (speeds, timers, the
+power-up chance table) are in the debug menu, with their defaults in `scripts/tuning.gd`.
+
 ## Play
 
 Natively:
@@ -107,13 +125,14 @@ godot --path .
 In the browser (after exporting):
 
 ```
-godot --headless --path . --export-release "Web" build/web/index.html
+node tools/export-web.mjs
 npx http-server build/web -p 8139      # in PowerShell: npx.cmd http-server build/web -p 8139
 ```
 
 Then open http://localhost:8139.
 
-Publish to GitHub Pages (after exporting):
+Publish to GitHub Pages (after exporting). The title and pause screens show the build, so you can
+check which version a browser is running:
 
 ```
 node tools/deploy-pages.mjs

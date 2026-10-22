@@ -80,6 +80,8 @@ func _initialize() -> void:
 	_test_rope_and_serve_arrow_state()
 	_test_powerup_chance_table()
 	_test_level_jingles()
+	_test_content_files_are_complete()
+	_test_content_numbers_drive_the_game()
 	# Touch
 	_test_tap_flow_title_map_round()
 	_test_swipe_moves_paddle()
@@ -1244,4 +1246,53 @@ func _test_level_jingles() -> void:
 	_score_point(game, 1)
 	_expect(game.music.jingle_player.stream == game.music.jingle(false), "losing the level should play the loss jingle")
 	game.music.free()
+	game.free()
+
+
+# ---------------------------------------------------------------- editable content files
+
+func _valid_icon(icon: Variant) -> bool:
+	if not icon is Array or icon.size() != 5:
+		return false
+	for row in icon:
+		if not row is String or row.length() != 5:
+			return false
+	return true
+
+
+func _test_content_files_are_complete() -> void:
+	var game := _game()
+	for type in game.PowerUp.values():
+		var pu: Dictionary = game.PU_INFO[type]
+		_expect(pu.has("name") and pu.color is Color and _valid_icon(pu.icon), "power-up %s needs name, color and a 5x5 icon" % game.PU_KEYS[type])
+	for id in game.Upgrades.DEFS:
+		var u: Dictionary = game.Upgrades.DEFS[id]
+		_expect(u.has("name") and u.has("desc") and int(u.get("max", 0)) > 0 and u.color is Color and _valid_icon(u.icon), "upgrade %s is incomplete" % id)
+	for id in ["flame", "slime", "magnet", "long", "power", "lucky", "wingman", "venom", "overcharge", "factory", "turret"]:
+		_expect(game.Upgrades.DEFS.has(id), "content/upgrades.cfg lost [%s]" % id)
+	for id in game.Relics.DEFS:
+		var r: Dictionary = game.Relics.DEFS[id]
+		_expect(r.has("name") and r.has("desc") and int(r.get("price", 0)) > 0 and r.color is Color and _valid_icon(r.icon), "relic %s is incomplete" % id)
+	_expect(game.Relics.DEFS.size() == 10, "content/relics.cfg should have 10 relics, got %d" % game.Relics.DEFS.size())
+	_expect(game.Foes.NAMES.size() >= 2 and game.Foes.COLORS[0] is Color and game.Foes.BOSSES.size() >= 1, "content/opponents.cfg should give names, colors and bosses")
+	var Music: GDScript = load("res://scripts/music.gd")
+	_expect(Music.TRACKS.has("game") and Music.TRACKS.has("map") and Music.TRACKS.has("shop"), "content/music.cfg should have the game, map and shop tracks")
+	_expect(Music.JINGLES.has("win") and Music.JINGLES.has("lose"), "content/music.cfg should have both jingles")
+	game.free()
+
+
+func _test_content_numbers_drive_the_game() -> void:
+	var game := _game()
+	game.run.add("long")
+	var h: float = game.paddle_height(0)
+	var saved: float = game.Upgrades.DEFS.long.per_level
+	game.Upgrades.DEFS.long.per_level = 0.5
+	_expect(game.paddle_height(0) > h, "editing LONG PADDLE per_level should change the paddle size")
+	game.Upgrades.DEFS.long.per_level = saved
+	var ball := _playing(game, Vector2(100.0, 80.0), Vector2(100.0, 0.0), 0)
+	var saved_mult: float = game.PU_INFO[game.PowerUp.FAST_BALL].speed_mult
+	game.PU_INFO[game.PowerUp.FAST_BALL].speed_mult = 2.0
+	game.apply_powerup(game.PowerUp.FAST_BALL, 0, ball)
+	_expect(is_equal_approx(ball.vel.x, 200.0), "FAST BALL speed_mult from the content file should apply")
+	game.PU_INFO[game.PowerUp.FAST_BALL].speed_mult = saved_mult
 	game.free()

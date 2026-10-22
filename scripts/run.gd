@@ -4,6 +4,7 @@ extends RefCounted
 ## A run can be suspended to the save file and continued later.
 
 const Upgrades := preload("res://scripts/upgrades.gd")
+const Relics := preload("res://scripts/relics.gd")
 
 const SAVE_PATH := "user://save.cfg"
 const GEMS_PER_ROUND := 2
@@ -84,8 +85,9 @@ func clear_round(boss_every: int, shop_every: int) -> void:
 		bosses += 1
 		earned += GEMS_PER_BOSS
 	if has_relic("tithe"):
-		tithe += GEMS_TITHE
-		earned += GEMS_TITHE
+		var bonus: int = int(Relics.num("tithe", "gems", GEMS_TITHE))
+		tithe += bonus
+		earned += bonus
 	gems += earned
 	cleared += 1
 	level += 1

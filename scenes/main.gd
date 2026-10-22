@@ -16,6 +16,7 @@ const Relics := preload("res://scripts/relics.gd")
 const Screens := preload("res://scripts/screens.gd")
 const Music := preload("res://scripts/music.gd")
 const Foes := preload("res://scripts/foes.gd")
+const Content := preload("res://scripts/content.gd")
 
 enum State { TITLE, MAP, SHOP, SERVE, PLAY, ROUND_END, UPGRADE, RUN_OVER }
 enum PowerUp { FAST_BALL, MULTI_BALL, BIG_PADDLE, SHRINK_FOE, SLOW_FOE, WINGMAN, TURRET, POISON, BOOSTER, GENERATOR }
@@ -55,34 +56,37 @@ const SPARK := Palette.SPARK
 const GEM_COL := Palette.GEM
 const BOSS_COL := Palette.BOSS
 
-const PU_INFO := {
-	PowerUp.FAST_BALL: {"label": "FAST BALL!", "color": Color8(248, 216, 72),
-		"icon": ["10100", "01010", "00101", "01010", "10100"]},
-	PowerUp.MULTI_BALL: {"label": "MULTI BALL!", "color": Color8(248, 248, 248),
-		"icon": ["10001", "00000", "00100", "00000", "10001"]},
-	PowerUp.BIG_PADDLE: {"label": "BIG PADDLE!", "color": Color8(88, 216, 104),
-		"icon": ["01110", "00100", "00100", "00100", "01110"]},
-	PowerUp.SHRINK_FOE: {"label": "SHRINK FOE!", "color": Color8(248, 72, 72),
-		"icon": ["10001", "01010", "00100", "01010", "10001"]},
-	PowerUp.SLOW_FOE: {"label": "SLOW FOE!", "color": Color8(168, 104, 248),
-		"icon": ["01010", "01010", "01010", "01010", "01010"]},
-	PowerUp.WINGMAN: {"label": "WINGMAN!", "color": Color8(152, 184, 248),
-		"icon": ["10100", "10101", "10101", "10101", "00101"]},
-	PowerUp.TURRET: {"label": "TURRET!", "color": Color8(248, 200, 72),
-		"icon": ["00100", "01110", "11011", "01110", "00100"]},
-	PowerUp.POISON: {"label": "POISON!", "color": Color8(176, 96, 248),
-		"icon": ["01110", "10101", "11111", "01110", "01010"]},
-	PowerUp.BOOSTER: {"label": "BOOSTER!", "color": Color8(248, 248, 120),
-		"icon": ["00110", "01100", "11111", "00110", "01100"]},
-	PowerUp.GENERATOR: {"label": "GENERATOR!", "color": Color8(232, 232, 232),
-		"icon": ["11111", "10101", "11111", "10001", "11111"]},
-}
-## Timed paddle effects. size/speed are fixed multipliers; burn and slime are computed from upgrades.
+## Tuning keys of the power-up chance table and the ids in content/powerups.cfg, in PowerUp order.
+const PU_KEYS := ["fast_ball", "multi_ball", "big_paddle", "shrink_foe", "slow_foe", "wingman", "turret", "poison", "booster", "generator"]
+## Loaded from content/powerups.cfg, keyed by PowerUp: {name, label, color, icon, desc, effect numbers}.
+static var PU_INFO: Dictionary = _load_powerups()
+
+
+static func _load_powerups() -> Dictionary:
+	var data: Dictionary = Content.table("powerups")
+	var out: Dictionary = {}
+	for type in PU_KEYS.size():
+		var entry: Dictionary = data.get(PU_KEYS[type], {})
+		if entry.is_empty():
+			push_error("content/powerups.cfg has no [%s] section" % PU_KEYS[type])
+			entry = {"name": PU_KEYS[type].to_upper(), "color": Color.WHITE, "icon": ["11111", "10001", "10001", "10001", "11111"]}
+		entry["label"] = entry.name + "!"
+		out[type] = entry
+	return out
+
+
+## An effect number for a power-up from the content file.
+static func pu_num(type: int, key: String, fallback: float) -> float:
+	return float(PU_INFO[type].get(key, fallback))
+
+
+## Timed paddle effects and where they come from. The size/speed multipliers of power-up effects
+## are size_mult/speed_mult in content/powerups.cfg; burn and slime are computed from upgrades.
 const EFFECT_INFO := {
-	"big": {"size": 1.5, "speed": 1.0, "pu": PowerUp.BIG_PADDLE},
-	"small": {"size": 0.6, "speed": 1.0, "pu": PowerUp.SHRINK_FOE},
-	"slow": {"size": 1.0, "speed": 0.6, "pu": PowerUp.SLOW_FOE},
-	"boost": {"size": 1.0, "speed": 1.0, "pu": PowerUp.BOOSTER},
+	"big": {"pu": PowerUp.BIG_PADDLE},
+	"small": {"pu": PowerUp.SHRINK_FOE},
+	"slow": {"pu": PowerUp.SLOW_FOE},
+	"boost": {"pu": PowerUp.BOOSTER},
 	"burn": {"upgrade": "flame"},
 	"slime": {"upgrade": "slime"},
 }
@@ -602,12 +606,12 @@ func _start_game() -> void:
 		for i in level_of(side, "wingman") - have:
 			spawn_drone(side, false)
 		if level_of(side, "overcharge") > 0:
-			_add_effect(side, "boost", 2.0 * level_of(side, "overcharge"), side)
+			_add_effect(side, "boost", Upgrades.num("overcharge", "seconds_per_level", 2.0) * level_of(side, "overcharge"), side)
 		# BALL FACTORY: a fresh generator each game (2 balls, +1 per extra level).
 		var factory: int = level_of(side, "factory")
 		if factory > 0:
 			generators = generators.filter(func(g: Dictionary) -> bool: return g.side != side or g.temp)
-			spawn_generator(side, false, int(tuning.get_value("gen_balls")) + factory - 1)
+			spawn_generator(side, false, int(tuning.get_value("gen_balls")) + int(Upgrades.num("factory", "extra_balls_per_level", 1)) * (factory - 1))
 
 
 func foe_name() -> String:
@@ -827,7 +831,7 @@ func simulate(delta: float, dir: float) -> void:
 func momentum_factor(side: int) -> float:
 	if side != 0 or not run.has_relic("momentum"):
 		return 1.0
-	return 1.0 + MOMENTUM_STEP * mini(run.streak, MOMENTUM_MAX)
+	return 1.0 + Relics.num("momentum", "per_game", MOMENTUM_STEP) * mini(run.streak, int(Relics.num("momentum", "max_games", MOMENTUM_MAX)))
 
 
 ## Upgrade levels of side (the player's picks or the CPU's), not scaled.
@@ -851,13 +855,13 @@ func _boosted(mult: float, src: int) -> float:
 
 
 func paddle_height(side: int) -> float:
-	var h: float = tuning.get_value("paddle_h") * momentum_factor(side) * (1.0 + 0.15 * up(side, "long"))
+	var h: float = tuning.get_value("paddle_h") * momentum_factor(side) * (1.0 + Upgrades.num("long", "per_level", 0.15) * up(side, "long"))
 	for name in effects[side]:
 		var e: Dictionary = effects[side][name]
 		if name == "burn":
 			h *= 1.0 - burn_strength(e.src) * (1.0 - e.t / e.total)
-		elif EFFECT_INFO[name].has("size"):
-			h *= _boosted(EFFECT_INFO[name].size, e.src)
+		elif EFFECT_INFO[name].has("pu"):
+			h *= _boosted(pu_num(EFFECT_INFO[name].pu, "size_mult", 1.0), e.src)
 	return clampf(roundf(h), 4.0, BOTTOM - TOP)
 
 
@@ -871,8 +875,8 @@ func paddle_speed(side: int) -> float:
 		var e: Dictionary = effects[side][name]
 		if name == "slime":
 			s *= slime_factor(e.src)
-		elif EFFECT_INFO[name].has("speed"):
-			s *= _boosted(EFFECT_INFO[name].speed, e.src)
+		elif EFFECT_INFO[name].has("pu"):
+			s *= _boosted(pu_num(EFFECT_INFO[name].pu, "speed_mult", 1.0), e.src)
 	if in_poison(side):
 		s *= tuning.get_value("poison_area_slow")
 	return s
@@ -899,17 +903,20 @@ func _tick_poison_areas(delta: float) -> void:
 
 ## VIRULENT relic (player only): status effects last and hit 50% more.
 func status_boost(src: int) -> float:
-	return 1.5 if src == 0 and run.has_relic("virulent") else 1.0
+	return Relics.num("virulent", "mult", 1.5) if src == 0 and run.has_relic("virulent") else 1.0
 
 
 ## How much of the paddle a full burn from src takes away (more with more FLAME BALL).
 func burn_strength(src: int) -> float:
-	return minf(0.8, (0.3 + 0.1 * maxf(0.0, up(src, "flame") - 1.0)) * status_boost(src))
+	var strength: float = Upgrades.num("flame", "base_strength", 0.3) \
+		+ Upgrades.num("flame", "strength_per_level", 0.1) * maxf(0.0, up(src, "flame") - 1.0)
+	return minf(Upgrades.num("flame", "max_strength", 0.8), strength * status_boost(src))
 
 
 func slime_factor(src: int) -> float:
-	var slow: float = (0.4 + 0.1 * maxf(0.0, up(src, "slime") - 1.0)) * status_boost(src)
-	return maxf(0.2, 1.0 - slow)
+	var slow: float = (Upgrades.num("slime", "base_slow", 0.4) \
+		+ Upgrades.num("slime", "slow_per_level", 0.1) * maxf(0.0, up(src, "slime") - 1.0)) * status_boost(src)
+	return maxf(Upgrades.num("slime", "min_speed", 0.2), 1.0 - slow)
 
 
 func paddle_top(side: int) -> float:
@@ -1035,7 +1042,7 @@ func _deflect(ball: Ball, side: int, center_y: float, half: float, source: Strin
 	var inherits: bool = side == 1 or source == "paddle" or (source == "drone" and run.has_relic("sync")) \
 		or (source == "unit" and run.has_relic("hive"))
 	if inherits:
-		speed *= 1.0 + 0.12 * up(side, "power")
+		speed *= 1.0 + Upgrades.num("power", "per_level", 0.12) * up(side, "power")
 	ball.flame = inherits and level_of(side, "flame") > 0
 	ball.slime = inherits and level_of(side, "slime") > 0
 	ball.venom = inherits and level_of(side, "venom") > 0
@@ -1063,16 +1070,16 @@ func _inflict(ball: Ball, side: int, center: Vector2) -> void:
 	var src: int = 1 - side
 	var away: Vector2 = Vector2(1, 0) if side == 0 else Vector2(-1, 0)
 	if ball.flame:
-		_add_effect(side, "burn", (tuning.get_value("burn_time") + 0.5 * (up(src, "flame") - 1.0)) * status_boost(src), src)
+		_add_effect(side, "burn", (tuning.get_value("burn_time") + Upgrades.num("flame", "extra_seconds_per_level", 0.5) * (up(src, "flame") - 1.0)) * status_boost(src), src)
 		_popup("BURN!", center, upgrade_color("flame"))
 		_burst(center, away, 14, upgrade_color("flame"))
 	if ball.slime:
-		_add_effect(side, "slime", (tuning.get_value("slime_time") + 0.5 * (up(src, "slime") - 1.0)) * status_boost(src), src)
+		_add_effect(side, "slime", (tuning.get_value("slime_time") + Upgrades.num("slime", "extra_seconds_per_level", 0.5) * (up(src, "slime") - 1.0)) * status_boost(src), src)
 		_popup("SLIMED!", center + Vector2(0, 8), upgrade_color("slime"))
 		_burst(center, away, 14, upgrade_color("slime"))
 	if ball.venom:
-		# VENOM BALL: 2 poison per hit at level 1, one more per extra level.
-		add_poison(side, 1.0 + up(src, "venom"))
+		# VENOM BALL: poison_base + poison_per_level per level (2 at level 1 by default).
+		add_poison(side, Upgrades.num("venom", "poison_base", 1.0) + Upgrades.num("venom", "poison_per_level", 1.0) * up(src, "venom"))
 		_burst(center, away, 8, upgrade_color("venom"))
 
 
@@ -1140,7 +1147,7 @@ func spawn_generator(side: int, temp: bool, count: int) -> void:
 
 ## BALL MILL relic: the player's generators fire twice as fast.
 func generator_interval(side: int) -> float:
-	return tuning.get_value("gen_interval") / (2.0 if side == 0 and run.has_relic("mill") else 1.0)
+	return tuning.get_value("gen_interval") / (Relics.num("mill", "speed", 2.0) if side == 0 and run.has_relic("mill") else 1.0)
 
 
 func _update_generators(delta: float) -> void:
@@ -1167,7 +1174,7 @@ func _generate_ball(gen: Dictionary) -> void:
 	var speed: float = tuning.get_value("ball_start") * level_factor("ball_lv")
 	var inherits: bool = side == 1 or run.has_relic("mill")
 	if inherits:
-		speed *= 1.0 + 0.12 * up(side, "power")
+		speed *= 1.0 + Upgrades.num("power", "per_level", 0.12) * up(side, "power")
 		ball.flame = level_of(side, "flame") > 0
 		ball.slime = level_of(side, "slime") > 0
 		ball.venom = level_of(side, "venom") > 0
@@ -1179,7 +1186,7 @@ func _generate_ball(gen: Dictionary) -> void:
 
 
 func _ally_hp(key: String, side: int) -> int:
-	return int(tuning.get_value(key)) + (1 if side == 0 and run.has_relic("plating") else 0)
+	return int(tuning.get_value(key)) + (int(Relics.num("plating", "extra_hp", 1)) if side == 0 and run.has_relic("plating") else 0)
 
 
 ## Adds an extra paddle for side in the next free lane in front of its goal. temp ones come from power-ups.
@@ -1312,7 +1319,7 @@ func _damage_unit(u: Dictionary) -> void:
 	if u.temp:
 		units.erase(u)
 	else:
-		u.rebuild = tuning.get_value("unit_respawn") / (2.0 if u.side == 0 and run.has_relic("repair") else 1.0)
+		u.rebuild = tuning.get_value("unit_respawn") / (Relics.num("repair", "speed", 2.0) if u.side == 0 and run.has_relic("repair") else 1.0)
 
 
 func _ally_destroyed(at: Vector2, text: String) -> void:
@@ -1326,7 +1333,7 @@ func _ally_destroyed(at: Vector2, text: String) -> void:
 # ---------------------------------------------------------------- power-ups, gems, magnet
 
 func _pu_interval() -> float:
-	return tuning.get_value("pu_interval") / (1.0 + 0.25 * run.stack("lucky")) / pu_ramp()
+	return tuning.get_value("pu_interval") / (1.0 + Upgrades.num("lucky", "spawn_per_level", 0.25) * run.stack("lucky")) / pu_ramp()
 
 
 ## After MORE POWER UPS AFTER SEC in a round, power-ups come POWER UPS THEN X MORE OFTEN.
@@ -1336,7 +1343,7 @@ func pu_ramp() -> float:
 
 
 func _gem_interval() -> float:
-	return tuning.get_value("gem_interval") / (1.0 + 0.25 * run.stack("lucky"))
+	return tuning.get_value("gem_interval") / (1.0 + Upgrades.num("lucky", "spawn_per_level", 0.25) * run.stack("lucky"))
 
 
 func _update_pickups(delta: float) -> void:
@@ -1371,18 +1378,14 @@ func _apply_magnet(delta: float) -> void:
 		var level: float = up(ball.last_touch, "magnet")
 		if level <= 0.0:
 			continue
-		var reach: float = tuning.get_value("magnet_range") + 15.0 * (level - 1.0)
-		var pull: float = (50.0 + 30.0 * level) * delta
+		var reach: float = tuning.get_value("magnet_range") + Upgrades.num("magnet", "reach_per_level", 15.0) * (level - 1.0)
+		var pull: float = (Upgrades.num("magnet", "pull_base", 50.0) + Upgrades.num("magnet", "pull_per_level", 30.0) * level) * delta
 		var center: Vector2 = ball.pos + Vector2.ONE * BALL / 2.0
 		for item in powerups + gems:
 			var size: float = PU_SIZE if item.has("type") else GEM_SIZE
 			var item_center: Vector2 = item.pos + Vector2.ONE * size / 2.0
 			if item_center.distance_to(center) < reach:
 				item.pos = item.pos.move_toward(item.pos + (center - item_center), pull)
-
-
-## Tuning keys of the power-up chance table, in PowerUp order.
-const PU_KEYS := ["fast_ball", "multi_ball", "big_paddle", "shrink_foe", "slow_foe", "wingman", "turret", "poison", "booster", "generator"]
 
 
 func powerup_weight(type: int) -> float:
@@ -1444,7 +1447,7 @@ func _check_pickups(ball: Ball) -> void:
 		return
 	for i in range(gems.size() - 1, -1, -1):
 		if ball_rect.intersects(pickup_rect(gems[i].pos, GEM_SIZE, ball)):
-			var value: int = 1 + run.stack("lucky")
+			var value: int = 1 + int(Upgrades.num("lucky", "gem_bonus_per_level", 1)) * run.stack("lucky")
 			run.add_shards(value)
 			_popup("+%d GEM" % value, gems[i].pos, GEM_COL)
 			_burst(gems[i].pos, Vector2.ZERO, 10, GEM_COL)
@@ -1459,11 +1462,13 @@ func apply_powerup(type: int, side: int, ball: Ball = null) -> void:
 	match type:
 		PowerUp.FAST_BALL:
 			if ball:
-				ball.vel *= _boosted(1.35, side)
+				ball.vel *= _boosted(pu_num(type, "speed_mult", 1.35), side)
 		PowerUp.MULTI_BALL:
 			if ball:
-				_split_ball(ball, -MULTI_SPREAD)
-				_split_ball(ball, MULTI_SPREAD)
+				# Extra balls fan out on alternating sides of the original.
+				var spread: float = pu_num(type, "spread", MULTI_SPREAD)
+				for i in int(pu_num(type, "extra_balls", 2)):
+					_split_ball(ball, spread * (i / 2 + 1) * (-1.0 if i % 2 == 0 else 1.0))
 		PowerUp.BIG_PADDLE:
 			_add_effect(side, "big", duration, side)
 		PowerUp.SHRINK_FOE:
