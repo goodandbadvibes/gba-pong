@@ -5,10 +5,12 @@ a 3x5 pixel font and square-wave blips. Made with Godot 4.7.2.
 
 **Play online:** https://goodandbadvibes.github.io/gba-pong/
 
-**How a run works:** points win a *game* (first to 3), games win a *round* (best of 5), and
+**How a run works:** points win a *game* (first to 3), games win a *round* (best of 5; level 1
+needs just one game win and level 2 is a best of 3), and
 each round is one node on the map. A run starts with a free pick of one of three upgrades. Win a
 round to pick another and move to the next
-node; lose one and the run is over. Every 2 levels the map stops at a **relic shop**. Every level brings a new named opponent in its own color (bosses in red). Opponents get faster
+node; lose one and the run is over. Every 2 levels the map stops at a **relic shop**. Every level brings a new named opponent in its own color (bosses in red). Whoever loses a round
+sees their paddle explode. An arrow at each serve shows which way the ball will go. Opponents get faster
 and aim better every level, gain one random upgrade per level after the first (their burn, slime and poison hit you too), and every 5th level is a boss. You earn gems as you go (2 per round cleared, 5 per boss, plus gem shards you collect) and
 spend them on relics. Your best run and gems are saved, and a run can be suspended and continued.
 
@@ -31,6 +33,7 @@ buttons.
 | WINGMAN | every game starts with an extra paddle per level that patrols up and down in front of yours |
 | VENOM BALL | balls you hit are poisonous; at 10 poison a poison patch appears on the foe's track and slows its paddle while it is over it |
 | OVERCHARGE | every game starts with a booster, 2 seconds per level |
+| BALL FACTORY | every game starts with a ball generator on your side: 2 balls, +1 per extra level |
 | TURRET | a turret per level guards your side and swats balls that come close; it rebuilds after a cooldown |
 
 **Wingmen and turrets** have HP (2 hits by default); every ball they hit costs one. Wingmen
@@ -49,10 +52,12 @@ paddle hit. The WINGMAN and TURRET power-ups give either side a one-off wingman 
 | THICK PLATING | your wingmen and turrets take one more hit |
 | QUICK REPAIR | destroyed turrets rebuild twice as fast |
 | SECOND WIND | once per run, a lost round does not end the run |
+| BALL MILL | your ball generators fire twice as fast and their balls use your upgrades |
 | GEM TITHE | +2 gems for every round cleared |
 
-**HUD:** level (top left, red on a boss level), current game out of the best-of (top right), games
-won beside each score, active effects with timers at the top, and both sides' upgrades along the
+**HUD:** the rope along the very top; level (red on a boss level) and current game out of the
+best-of on the left, the opponent's name in its color on the right; scores with games won beside
+them, active effects with timers at the top, and both sides' upgrades along the
 bottom (yours left, the opponent's right).
 
 **Pause:** Esc, P or the II button in the top-left corner. Resume, sound on/off, view your relics,
@@ -67,13 +72,14 @@ their own calm track and the shop a bouncy one. The debug menu sets volume, base
 (OFF / AUTO / ON).
 
 **Power-ups** spawn mid-court and go to whoever touched the ball that collects them last (a freshly
-served ball collects nothing). Gem shards only count for balls you hit. After 30 seconds in a round, power-ups start
-coming twice as often (both tunable).
+served ball collects nothing). Gem shards only count for balls you hit. The **rope** (a line along the top of the HUD) burns
+down over 30 seconds of a round; after that, power-ups come twice as often (both tunable).
 
 | Icon color | Power-up | Effect |
 |---|---|---|
 | purple | POISON | 4 poison on the collector's foe |
 | pale yellow | BOOSTER | for 6 seconds all the collector's modifiers work 1.5x as hard |
+| white box | GENERATOR | a ball generator for the collector: launches 2 balls at the other side, one every 2.5 s |
 | periwinkle | WINGMAN | a one-off extra paddle for the collector |
 | gold | TURRET | a one-off turret for the collector |
 | yellow | FAST BALL | that ball speeds up 35% |

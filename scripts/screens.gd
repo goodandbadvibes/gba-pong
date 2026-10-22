@@ -100,7 +100,7 @@ static func draw_map(g: Node2D) -> void:
 
 	var cpu_pct: int = roundi(g.level_factor("cpu_lv") * 100.0)
 	PixelFont.draw(g, "CPU SPEED %d%%   AIM ERROR %d" % [cpu_pct, roundi(g.cpu_error())], W / 2, 80, 1, Palette.MID, CENTER)
-	PixelFont.draw(g, "BEST OF %d GAMES   FIRST TO %d POINTS" % [int(g.tuning.get_value("best_of")), int(g.tuning.get_value("points_per_game"))], W / 2, 89, 1, Palette.MID, CENTER)
+	PixelFont.draw(g, "BEST OF %d GAMES   FIRST TO %d POINTS" % [g.round_best_of(), int(g.tuning.get_value("points_per_game"))], W / 2, 89, 1, Palette.MID, CENTER)
 
 	PixelFont.draw(g, "YOURS", 6, 101, 1, Palette.DIM)
 	_draw_owned(g, 100)

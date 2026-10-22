@@ -72,6 +72,12 @@ func _initialize() -> void:
 	_test_suspended_run_keeps_foe_and_drops_unknown_upgrades()
 	_test_debug_menu_from_pause()
 	_test_music_layers_build_within_a_level()
+	# Short first levels, explosion, generators, rope
+	_test_first_levels_are_shorter()
+	_test_losing_paddle_explodes()
+	_test_generator_powerup_launches_its_balls()
+	_test_factory_and_mill()
+	_test_rope_and_serve_arrow_state()
 	# Touch
 	_test_tap_flow_title_map_round()
 	_test_swipe_moves_paddle()
@@ -92,6 +98,9 @@ func _new_game() -> Node2D:
 	game.tuning.reset()
 	game.tuning.set_value("powerups", 0.0)
 	game.tuning.set_value("gem_interval", 30.0)
+	# Rule tests use full-length rounds; the shorter first levels have their own test.
+	game.tuning.set_value("lv1_shorter", 0.0)
+	game.tuning.set_value("lv2_shorter", 0.0)
 	return game
 
 
@@ -299,8 +308,9 @@ func _test_round_win_offers_upgrades_and_advances_map() -> void:
 	for i in 3:
 		_score_point(game, 0)
 	_expect(game.state == game.State.ROUND_END and game.round_won, "3 games in a best of 5 should win the round")
-	_expect(game.run.level == 2 and game.run.cleared == 1, "winning should move to level 2")
+	_expect(game.run.level == 1, "the level stays put during the round-end banner")
 	_step(game, 120)
+	_expect(game.run.level == 2 and game.run.cleared == 1, "winning should move to level 2")
 	_expect(game.state == game.State.UPGRADE, "a won round should offer upgrades")
 	_expect(game.offers.size() == 3, "three upgrades should be offered, got %d" % game.offers.size())
 	var picked: String = game.offers[1]
@@ -1108,4 +1118,83 @@ func _test_music_layers_build_within_a_level() -> void:
 	game.run.level = 7
 	game.start_round()
 	_expect(game.music_intensity() == first, "a new level starts the layers over")
+	game.free()
+
+
+# ---------------------------------------------------------------- short first levels, explosion, generators
+
+func _test_first_levels_are_shorter() -> void:
+	var game := _game()
+	game.tuning.reset()
+	game.tuning.set_value("best_of", 5.0)
+	game.run.level = 1
+	_expect(game.games_to_win() == 1 and game.round_best_of() == 1, "level 1 should need 1 game win, got %d" % game.games_to_win())
+	game.run.level = 2
+	_expect(game.games_to_win() == 2 and game.round_best_of() == 3, "level 2 should be a best of 3")
+	game.run.level = 3
+	_expect(game.games_to_win() == 3 and game.round_best_of() == 5, "level 3 is the full best of 5")
+	game.run.level = 1
+	game.tuning.set_value("lv1_shorter", 4.0)
+	_expect(game.games_to_win() == 1, "a round always needs at least 1 game win")
+	game.free()
+
+
+func _test_losing_paddle_explodes() -> void:
+	var game := _game()
+	game.tuning.set_value("points_per_game", 1.0)
+	game.tuning.set_value("best_of", 1.0)
+	var before: int = game.particles.size()
+	_score_point(game, 0)
+	_expect(game.state == game.State.ROUND_END and game.exploded == 1, "the CPU paddle should explode when the CPU loses the round")
+	var chunks: int = game.particles.filter(func(p): return p.has("grav")).size()
+	_expect(chunks >= 10 and game.particles.size() > before, "the explosion should throw paddle chunks, got %d" % chunks)
+	_step(game, 150)
+	_expect(game.exploded == -1, "the explosion state should clear after the round ends")
+	game.free()
+
+
+func _test_generator_powerup_launches_its_balls() -> void:
+	var game := _game()
+	game.tuning.set_value("gen_balls", 2.0)
+	game.tuning.set_value("gen_interval", 0.5)
+	game.tuning.set_value("max_balls", 8.0)
+	var ball := _playing(game, Vector2(120.0, 80.0), Vector2(0.0, 0.0), 0)
+	game.apply_powerup(game.PowerUp.GENERATOR, 0, ball)
+	_expect(game.generators.size() == 1 and game.generators[0].left == 2 and game.generators[0].side == 0, "the GENERATOR power-up should place a 2-ball generator for the collector")
+	_expect(game.generators[0].pos.x < game.W / 2.0, "the player's generator sits on the player's half")
+	_step(game, 40)
+	var made: Array = game.balls.filter(func(b): return b != ball)
+	_expect(made.size() >= 1 and made[0].vel.x > 0.0 and made[0].last_touch == 0, "the generator should launch balls toward the CPU for the player")
+	_step(game, 40)
+	_expect(game.generators.is_empty(), "the generator should vanish once its 2 balls are out")
+	game.free()
+
+
+func _test_factory_and_mill() -> void:
+	var game := _game()
+	game.run.add("factory")
+	game.run.add("factory")
+	game.run.add("flame")
+	game.tuning.set_value("gen_balls", 2.0)
+	game.start_round()
+	_expect(game.generators.size() == 1 and game.generators[0].left == 3 and not game.generators[0].temp, "BALL FACTORY level 2 should start each game with a 3-ball generator")
+	var normal: float = game.generator_interval(0)
+	game.run.relics.append("mill")
+	_expect(is_equal_approx(game.generator_interval(0), normal / 2.0), "BALL MILL should make generators fire twice as fast")
+	game.state = game.State.PLAY
+	game._generate_ball(game.generators[0])
+	_expect(game.balls[-1].flame, "with BALL MILL, generated balls carry your upgrades")
+	game.free()
+
+
+func _test_rope_and_serve_arrow_state() -> void:
+	var game := _game()
+	game.tuning.set_value("pu_ramp_after", 20.0)
+	_playing(game, Vector2(120.0, 80.0), Vector2(60.0, 0.0), 0)
+	game.round_time = 10.0
+	_expect(is_equal_approx(game._pu_interval() * 1.0, game.tuning.get_value("pu_interval")), "before the rope burns down power-ups come at the normal rate")
+	game.round_time = 21.0
+	_expect(game.pu_ramp() > 1.0, "once the rope has burnt down power-ups come faster")
+	game.start_round()
+	_expect(game.state == game.State.SERVE and abs(game.serve_dir) == 1, "each serve knows its direction for the arrow")
 	game.free()

@@ -18,11 +18,12 @@ const Music := preload("res://scripts/music.gd")
 const Foes := preload("res://scripts/foes.gd")
 
 enum State { TITLE, MAP, SHOP, SERVE, PLAY, ROUND_END, UPGRADE, RUN_OVER }
-enum PowerUp { FAST_BALL, MULTI_BALL, BIG_PADDLE, SHRINK_FOE, SLOW_FOE, WINGMAN, TURRET, POISON, BOOSTER }
+enum PowerUp { FAST_BALL, MULTI_BALL, BIG_PADDLE, SHRINK_FOE, SLOW_FOE, WINGMAN, TURRET, POISON, BOOSTER, GENERATOR }
 
 const W := 240
 const H := 160
-const TOP := 14
+## Two HUD lines above the court: rope, level/game and opponent name, then scores and effects.
+const TOP := 20
 const BOTTOM := 150
 const PADDLE_W := 4
 const PADDLE_X: Array[int] = [8, W - 8 - PADDLE_W]
@@ -32,7 +33,7 @@ const PU_LIFE := 9.0
 const GEM_SIZE := 5
 const GEM_LIFE := 10.0
 const MULTI_SPREAD := 0.35
-const ROUND_END_TIME := 1.4
+const ROUND_END_TIME := 1.8
 const SCREEN_LOCK := 0.35
 const MAP_ANIM := Screens.MAP_ANIM
 const DRONE_W := 3
@@ -74,6 +75,8 @@ const PU_INFO := {
 		"icon": ["01110", "10101", "11111", "01110", "01010"]},
 	PowerUp.BOOSTER: {"label": "BOOSTER!", "color": Color8(248, 248, 120),
 		"icon": ["00110", "01100", "11111", "00110", "01100"]},
+	PowerUp.GENERATOR: {"label": "GENERATOR!", "color": Color8(232, 232, 232),
+		"icon": ["11111", "10101", "11111", "10001", "11111"]},
 }
 ## Timed paddle effects. size/speed are fixed multipliers; burn and slime are computed from upgrades.
 const EFFECT_INFO := {
@@ -115,8 +118,12 @@ var units: Array[Dictionary] = []
 var poison: Array[float] = [0.0, 0.0]
 ## Poison patches on a paddle's track: {side, y (center), size, life, total}. Slow that paddle.
 var poison_areas: Array[Dictionary] = []
-## Seconds played in this round, for the power-up ramp.
+## Seconds played in this round: the "rope" that burns down until power-ups come faster.
 var round_time: float = 0.0
+## Ball generators: {side, pos, left (balls), timer, temp}.
+var generators: Array[Dictionary] = []
+## Side whose paddle exploded at the end of the round (-1 for none).
+var exploded: int = -1
 
 # Round and screen flow
 var round_won: bool = false
@@ -570,6 +577,7 @@ func _clear_field() -> void:
 	effects = [{}, {}]
 	poison = [0.0, 0.0]
 	poison_areas.clear()
+	generators.clear()
 
 
 func start_round() -> void:
@@ -596,6 +604,11 @@ func _start_game() -> void:
 			spawn_drone(side, false)
 		if level_of(side, "overcharge") > 0:
 			_add_effect(side, "boost", 2.0 * level_of(side, "overcharge"), side)
+		# BALL FACTORY: a fresh generator each game (2 balls, +1 per extra level).
+		var factory: int = level_of(side, "factory")
+		if factory > 0:
+			generators = generators.filter(func(g: Dictionary) -> bool: return g.side != side or g.temp)
+			spawn_generator(side, false, int(tuning.get_value("gen_balls")) + factory - 1)
 
 
 func foe_name() -> String:
@@ -606,8 +619,19 @@ func foe_color() -> Color:
 	return run.foe.get("color", Palette.CPU)
 
 
+## Game wins needed this round: the best-of setting, minus a few on levels 1 and 2 (never below 1).
 func games_to_win() -> int:
-	return int(tuning.get_value("best_of")) / 2 + 1
+	var need: int = int(tuning.get_value("best_of")) / 2 + 1
+	if run.level == 1:
+		need -= int(tuning.get_value("lv1_shorter"))
+	elif run.level == 2:
+		need -= int(tuning.get_value("lv2_shorter"))
+	return maxi(1, need)
+
+
+## The round's length as "best of N" games.
+func round_best_of() -> int:
+	return games_to_win() * 2 - 1
 
 
 func is_boss() -> bool:
@@ -646,17 +670,11 @@ func _round_end(winner: int) -> void:
 	state = State.ROUND_END
 	round_won = winner == 0
 	transition = ROUND_END_TIME
+	explode_paddle(1 - winner)
 	_clear_field()
 	_shake(4.0)
 	bg_flash = 0.12
-	if round_won:
-		run.clear_round(int(tuning.get_value("boss_every")), int(tuning.get_value("shop_every")))
-		for i in int(tuning.get_value("cpu_upgrades")):
-			give_cpu_upgrade()
-		run.foe = Foes.roll(rng, is_boss(), run.foe)
-		_play("win")
-	else:
-		_play("lose")
+	_play("win" if round_won else "lose")
 
 
 ## The opponent gets stronger: one random upgrade per level it reaches (none on level 1).
@@ -668,9 +686,39 @@ func give_cpu_upgrade() -> String:
 	return pick[0]
 
 
+## The losing paddle bursts into chunks and sparks; its wingmen and turrets go with it.
+func explode_paddle(side: int) -> void:
+	exploded = side
+	var top: float = paddle_top(side)
+	var h: float = paddle_height(side)
+	var away: float = 1.0 if side == 0 else -1.0
+	for y in range(0, int(h), 2):
+		for x in [0, 2]:
+			particles.append({"pos": Vector2(PADDLE_X[side] + x, top + y),
+				"vel": Vector2(away * rng.randf_range(20.0, 150.0), rng.randf_range(-130.0, 60.0)),
+				"life": rng.randf_range(0.7, 1.4), "color": side_col[side] if rng.randf() < 0.7 else WHITE,
+				"size": 2.0, "drag": 0.97, "grav": 160.0})
+	_burst(Vector2(PADDLE_X[side] + 2, top + h / 2.0), Vector2.ZERO, 30, SPARK)
+	for d in drones:
+		if d.side == side:
+			_burst(Vector2(d.x, d.y), Vector2.ZERO, 12, side_col[side])
+	for u in units:
+		if u.side == side and u.alive:
+			_burst(u.pos, Vector2.ZERO, 12, side_col[side])
+	_shake(9.0)
+	bg_flash = 0.15
+	_play("break")
+
+
 func _after_round() -> void:
 	screen_lock = SCREEN_LOCK
+	exploded = -1
 	if round_won:
+		# Advance only after the banner, so the explosion still shows the opponent just beaten.
+		run.clear_round(int(tuning.get_value("boss_every")), int(tuning.get_value("shop_every")))
+		for i in int(tuning.get_value("cpu_upgrades")):
+			give_cpu_upgrade()
+		run.foe = Foes.roll(rng, is_boss(), run.foe)
 		offers = Upgrades.offers(rng, run.stacks)
 		offer_index = 0
 		starting_pick = false
@@ -769,6 +817,7 @@ func simulate(delta: float, dir: float) -> void:
 	else:
 		round_time += delta
 		_update_pickups(delta)
+		_update_generators(delta)
 		for ball in balls.duplicate():
 			if state != State.PLAY:
 				break
@@ -1080,6 +1129,54 @@ func _goal(ball: Ball, scorer: int) -> void:
 
 # ---------------------------------------------------------------- wingmen and turrets
 
+## Places a ball generator on side's half. It launches its balls toward the other side one by one.
+func spawn_generator(side: int, temp: bool, count: int) -> void:
+	var x: float = rng.randf_range(48.0, 96.0) if side == 0 else rng.randf_range(W - 96.0, W - 48.0)
+	var pos := Vector2(x, rng.randf_range(TOP + 16.0, BOTTOM - 16.0))
+	generators.append({"side": side, "pos": pos, "left": count, "timer": generator_interval(side), "temp": temp})
+	_burst(pos, Vector2.ZERO, 12, PU_INFO[PowerUp.GENERATOR].color)
+
+
+## BALL MILL relic: the player's generators fire twice as fast.
+func generator_interval(side: int) -> float:
+	return tuning.get_value("gen_interval") / (2.0 if side == 0 and run.has_relic("mill") else 1.0)
+
+
+func _update_generators(delta: float) -> void:
+	for gen in generators.duplicate():
+		gen.timer -= delta
+		if gen.timer > 0.0 or balls.size() >= int(tuning.get_value("max_balls")):
+			continue
+		_generate_ball(gen)
+		gen.left -= 1
+		gen.timer = generator_interval(gen.side)
+		if gen.left <= 0:
+			generators.erase(gen)
+			_burst(gen.pos, Vector2.ZERO, 16, side_col[gen.side])
+			_popup("EMPTY", gen.pos + Vector2(0, -8), MID, 0.6)
+
+
+## A new ball from a generator, flying toward the other side. The CPU's always carry its upgrades;
+## the player's need BALL MILL.
+func _generate_ball(gen: Dictionary) -> void:
+	var side: int = gen.side
+	var ball := Ball.new()
+	ball.pos = gen.pos - Vector2.ONE * BALL / 2.0
+	var angle: float = rng.randf_range(-0.5, 0.5)
+	var speed: float = tuning.get_value("ball_start") * level_factor("ball_lv")
+	var inherits: bool = side == 1 or run.has_relic("mill")
+	if inherits:
+		speed *= 1.0 + 0.12 * up(side, "power")
+		ball.flame = level_of(side, "flame") > 0
+		ball.slime = level_of(side, "slime") > 0
+		ball.venom = level_of(side, "venom") > 0
+	ball.vel = Vector2(cos(angle) * (1.0 if side == 0 else -1.0), sin(angle)) * speed
+	ball.last_touch = side
+	balls.append(ball)
+	_burst(gen.pos, Vector2(1.0 if side == 0 else -1.0, 0.0), 10, WHITE)
+	_play("serve")
+
+
 func _ally_hp(key: String, side: int) -> int:
 	return int(tuning.get_value(key)) + (1 if side == 0 and run.has_relic("plating") else 0)
 
@@ -1330,6 +1427,8 @@ func apply_powerup(type: int, side: int, ball: Ball = null) -> void:
 			add_poison(foe, tuning.get_value("poison_pu") * boost(side))
 		PowerUp.BOOSTER:
 			_add_effect(side, "boost", tuning.get_value("booster_time"), side)
+		PowerUp.GENERATOR:
+			spawn_generator(side, true, int(tuning.get_value("gen_balls")))
 		PowerUp.WINGMAN:
 			spawn_drone(side, true)
 		PowerUp.TURRET:
@@ -1392,7 +1491,9 @@ func _update_effects(delta: float) -> void:
 	for i in range(particles.size() - 1, -1, -1):
 		var p: Dictionary = particles[i]
 		p.pos += p.vel * delta
-		p.vel *= 0.86
+		# Debris keeps flying and falls; sparks slow down fast.
+		p.vel *= p.get("drag", 0.86)
+		p.vel.y += p.get("grav", 0.0) * delta
 		p.life -= delta
 		if p.life <= 0.0:
 			particles.remove_at(i)
@@ -1540,7 +1641,7 @@ func _draw() -> void:
 			_draw_court()
 
 	for p in particles:
-		var size: float = 2.0 if p.life > 0.2 else 1.0
+		var size: float = p.get("size", 2.0 if p.life > 0.2 else 1.0)
 		draw_rect(Rect2(p.pos.round(), Vector2(size, size)), p.color)
 	for popup in popups:
 		# Keep the whole label on screen even when it starts near an edge.
@@ -1572,6 +1673,7 @@ func _draw_court() -> void:
 	_draw_score(1, W / 2 + 19)
 	_draw_game_pips()
 	_draw_poison_meters()
+	_draw_rope()
 	_draw_round_info()
 	_draw_effect_icons(0)
 	_draw_effect_icons(1)
@@ -1592,6 +1694,8 @@ func _draw_court() -> void:
 		_draw_unit(u)
 	for d in drones:
 		_draw_drone(d)
+	for gen in generators:
+		_draw_generator(gen)
 
 	for side in 2:
 		_draw_paddle(side)
@@ -1603,7 +1707,8 @@ func _draw_court() -> void:
 			for ball in balls:
 				_draw_ball(ball)
 		State.SERVE:
-			PixelFont.draw(self, banner, W / 2, 30, 1, BOSS_COL if is_boss() else MID, PixelFont.Align.CENTER)
+			PixelFont.draw(self, banner, W / 2, TOP + 14, 1, BOSS_COL if is_boss() else MID, PixelFont.Align.CENTER)
+			_draw_serve_arrow()
 			if fmod(serve_timer, 0.2) > 0.1:
 				for ball in balls:
 					_draw_ball(ball)
@@ -1612,6 +1717,33 @@ func _draw_court() -> void:
 			var color: Color = side_col[0] if round_won else side_col[1]
 			if fmod(transition, 0.3) > 0.08:
 				PixelFont.draw(self, text, W / 2, 62, 3, color, PixelFont.Align.CENTER)
+
+
+## An arrow beside the waiting ball pointing where the serve will go, nudging that way as it blinks.
+func _draw_serve_arrow() -> void:
+	if balls.is_empty():
+		return
+	var center: Vector2 = balls[0].pos + Vector2.ONE * BALL / 2.0
+	var nudge: float = 2.0 if fmod(serve_timer, 0.4) < 0.2 else 0.0
+	var tip_x: float = center.x + serve_dir * (14.0 + nudge)
+	var color: Color = side_col[0] if serve_dir < 0 else side_col[1]
+	# Shaft, then a 4-row arrowhead.
+	draw_rect(Rect2(minf(center.x + serve_dir * 6.0, tip_x - serve_dir * 4.0), center.y - 1, 6, 2), color)
+	for i in 4:
+		var x: float = tip_x - serve_dir * i
+		draw_rect(Rect2(x, center.y - i - 1, 1, i * 2 + 2), color)
+
+
+func _draw_generator(gen: Dictionary) -> void:
+	var color: Color = side_col[gen.side]
+	var rect := Rect2((gen.pos - Vector2(4, 4)).round(), Vector2(9, 9))
+	draw_rect(rect, color.darkened(0.4))
+	draw_rect(rect.grow(-1), BG)
+	# The core flashes white just before a ball comes out.
+	var ready: bool = gen.timer < 0.3 and fmod(blink, 0.1) < 0.05
+	draw_rect(rect.grow(-3), WHITE if ready else color)
+	for i in gen.left:
+		draw_rect(Rect2(rect.position.x + i * 2, rect.end.y + 1, 1, 1), WHITE)
 
 
 func _draw_drone(d: Dictionary) -> void:
@@ -1655,11 +1787,11 @@ func _draw_poison_meters() -> void:
 	var cap: float = tuning.get_value("poison_cap")
 	for side in 2:
 		var x: int = W / 2 - 48 if side == 0 else W / 2 + 32
-		draw_rect(Rect2(x, 10, 16, 1), DIM)
+		draw_rect(Rect2(x, 16, 16, 1), DIM)
 		var fill: float = ceilf(16.0 * clampf(poison[side] / cap, 0.0, 1.0))
 		if fill > 0.0:
 			# Fill from the outside edge toward the score.
-			draw_rect(Rect2(x + (16 - fill if side == 0 else 0), 10, fill, 1), upgrade_color("venom"))
+			draw_rect(Rect2(x + (16 - fill if side == 0 else 0), 16, fill, 1), upgrade_color("venom"))
 
 
 ## Games won this round as small squares beside each score.
@@ -1667,7 +1799,7 @@ func _draw_game_pips() -> void:
 	for side in 2:
 		for i in games_to_win():
 			var x: int = (W / 2 - 34 - i * 5) if side == 0 else (W / 2 + 31 + i * 5)
-			var rect := Rect2(x, 5, 3, 3)
+			var rect := Rect2(x, 11, 3, 3)
 			if i < run.games[side]:
 				draw_rect(rect, side_col[side])
 			else:
@@ -1705,6 +1837,8 @@ func _draw_ball(ball: Ball) -> void:
 
 
 func _draw_paddle(side: int) -> void:
+	if side == exploded and state == State.ROUND_END:
+		return
 	var flash: bool = paddle_flash[side] > 0.0
 	var kick: float = (2.0 if side == 1 else -2.0) if flash else 0.0
 	var color: Color = WHITE if flash else side_col[side]
@@ -1772,11 +1906,27 @@ func draw_icon(rows: Array, pos: Vector2, color: Color, scale: int = 1) -> void:
 				draw_rect(Rect2(pos.x + col * scale, pos.y + row * scale, scale, scale), color)
 
 
-## Level on the left (red on a boss level) and the current game out of the best-of on the right.
+## The rope: a line along the very top that fills until power-ups start coming faster, then blinks.
+func _draw_rope() -> void:
+	var length: float = tuning.get_value("pu_ramp_after")
+	if length <= 0.0 or not in_round():
+		return
+	var burnt: float = clampf(round_time / length, 0.0, 1.0)
+	if burnt >= 1.0:
+		draw_rect(Rect2(0, 0, W, 1), SPARK if fmod(blink, 0.4) < 0.2 else PU_INFO[PowerUp.BOOSTER].color)
+	else:
+		draw_rect(Rect2(0, 0, W, 1), DIM)
+		draw_rect(Rect2(0, 0, roundf(W * burnt), 1), MID)
+		draw_rect(Rect2(roundf(W * burnt), 0, 1, 1), SPARK)
+
+
+## First HUD line: level (red on a boss level) and the current game of the best-of on the left,
+## the opponent's name in its color on the right, above its score.
 func _draw_round_info() -> void:
-	PixelFont.draw(self, "LV%d" % run.level, 15, 4, 1, BOSS_COL if is_boss() else MID)
-	var game_no: int = mini(run.games[0] + run.games[1] + 1, int(tuning.get_value("best_of")))
-	PixelFont.draw(self, "G%d/%d" % [game_no, int(tuning.get_value("best_of"))], W - 2, 4, 1, MID, PixelFont.Align.RIGHT)
+	PixelFont.draw(self, "LV%d" % run.level, 15, 2, 1, BOSS_COL if is_boss() else MID)
+	var game_no: int = mini(run.games[0] + run.games[1] + 1, round_best_of())
+	PixelFont.draw(self, "G%d/%d" % [game_no, round_best_of()], 34, 2, 1, MID)
+	PixelFont.draw(self, foe_name(), W - 2, 2, 1, side_col[1], PixelFont.Align.RIGHT)
 
 
 ## Both sides' run upgrades as icons with their level, under the court: yours left, the foe's right.
@@ -1806,22 +1956,22 @@ func _draw_poison_areas() -> void:
 					draw_rect(Rect2(x + dx, y, 1, 1), upgrade_color("venom").darkened(0.35))
 
 
-## Small icons with time bars in the HUD for each active paddle effect (after the pause button and level).
+## Small icons with time bars on the second HUD line for each active paddle effect.
 func _draw_effect_icons(side: int) -> void:
-	var x: int = 33 if side == 0 else W - 26
+	var x: int = 15 if side == 0 else W - 7
 	var step: int = 8 if side == 0 else -8
 	for name in effects[side]:
 		var color: Color = effect_color(name)
-		draw_icon(effect_icon(name), Vector2(x, 2), color)
+		draw_icon(effect_icon(name), Vector2(x, 9), color)
 		var e: Dictionary = effects[side][name]
-		draw_rect(Rect2(x, 9, ceilf(5.0 * clampf(e.t / e.total, 0.0, 1.0)), 1), color)
+		draw_rect(Rect2(x, 15, ceilf(5.0 * clampf(e.t / e.total, 0.0, 1.0)), 1), color)
 		x += step
 
 
 func _draw_score(side: int, x: int) -> void:
 	var pop: float = score_pop[side]
 	var scale: int = 3 if pop > 0.0 else 2
-	var y: int = 0 if pop > 0.0 else 2
+	var y: int = 6 if pop > 0.0 else 8
 	PixelFont.draw(self, str(scores[side]), x, y, scale, WHITE if pop > 0.15 else side_col[side], PixelFont.Align.CENTER)
 
 
