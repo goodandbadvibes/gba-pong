@@ -24,10 +24,29 @@ const GLYPHS := {
 	"-": ["000", "000", "111", "000", "000"], "+": ["000", "010", "111", "010", "000"],
 	"!": ["010", "010", "010", "000", "010"], "/": ["001", "001", "010", "100", "100"],
 	">": ["100", "110", "111", "110", "100"], "<": ["001", "011", "111", "011", "001"],
+	"%": ["101", "001", "010", "100", "101"], "?": ["111", "001", "010", "000", "010"],
+	"'": ["010", "010", "000", "000", "000"], ",": ["000", "000", "000", "010", "100"],
 	" ": ["000", "000", "000", "000", "000"],
 }
 
 enum Align { LEFT, CENTER, RIGHT }
+
+
+## Splits text into lines of at most max_chars, breaking at spaces.
+static func wrap(text: String, max_chars: int) -> Array[String]:
+	var lines: Array[String] = []
+	var line: String = ""
+	for word in text.split(" ", false):
+		if line.is_empty():
+			line = word
+		elif line.length() + 1 + word.length() <= max_chars:
+			line += " " + word
+		else:
+			lines.append(line)
+			line = word
+	if not line.is_empty():
+		lines.append(line)
+	return lines
 
 
 static func width(text: String, scale: int = 1) -> int:
