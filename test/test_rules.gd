@@ -64,6 +64,9 @@ func _initialize() -> void:
 	_test_music_layers_and_tempo()
 	_test_music_renders_a_loop()
 	_test_music_tracks_and_game_tempo()
+	_test_music_switches_instantly_when_cached()
+	_test_music_prefetch_makes_switch_instant()
+	_test_music_missing_loop_builds_fast()
 	# Touch
 	_test_tap_flow_title_map_round()
 	_test_swipe_moves_paddle()
@@ -1002,4 +1005,45 @@ func _test_music_tracks_and_game_tempo() -> void:
 				loud += 1
 		_expect(loud > 50, "the %s track should not be silent" % track)
 		_expect(wav.data.size() == music.loop_samples(music.track_bpm(track, 1)), "the %s loop should be two bars" % track)
+	music.free()
+
+
+# ---------------------------------------------------------------- music switching
+
+func _test_music_switches_instantly_when_cached() -> void:
+	var music := _music()
+	music.render_now(1, "map")
+	var map_key: String = music.current_key
+	music.play_for(1, "game")
+	_expect(music.current_key == "" and music.wanted_key != "", "a loop that is not ready should silence the old music at once")
+	music.play_for(1, "map")
+	_expect(music.current_key == map_key and music.wanted_key == "", "going back to a cached loop should switch instantly")
+	music.free()
+
+
+func _test_music_prefetch_makes_switch_instant() -> void:
+	var music := _music()
+	music.render_now(0, "map")
+	music.prefetch(3, "game", 1)
+	music.prefetch(0, "shop")
+	var frames: int = 0
+	while not (music.is_cached(3, "game", 1) and music.is_cached(0, "shop")) and frames < 2000:
+		music._process(1.0 / 60.0)
+		frames += 1
+	_expect(music.is_cached(3, "game", 1) and music.is_cached(0, "shop"), "prefetched loops should get built in the background")
+	_expect(music.current_key == music.spec(0, "map").key, "prefetching should not interrupt the playing loop")
+	music.play_for(0, "shop")
+	_expect(music.current_key == music.spec(0, "shop").key, "a prefetched loop should start the moment its screen opens")
+	music.free()
+
+
+func _test_music_missing_loop_builds_fast() -> void:
+	var music := _music()
+	music.play_for(6, "game", 2)
+	var frames: int = 0
+	while music.current_key == "" and frames < 600:
+		music._process(1.0 / 60.0)
+		frames += 1
+	_expect(music.current_key == music.spec(6, "game", 2).key, "the wanted loop should start once built")
+	_expect(frames <= 45, "an urgent loop should be ready within 45 frames, took %d" % frames)
 	music.free()

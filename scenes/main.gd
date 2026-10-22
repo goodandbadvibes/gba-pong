@@ -190,7 +190,10 @@ func _process(delta: float) -> void:
 	blink += delta
 	AudioServer.set_bus_mute(0, tuning.get_value("sound") < 1.0)
 	if music:
-		music.play_for(music_intensity(), music_track(), run.games[0] + run.games[1] if in_round() else 0)
+		# The round-end banner keeps the round's loop; the next screen picks its own.
+		if state != State.ROUND_END:
+			music.play_for(music_intensity(), music_track(), run.games[0] + run.games[1] if in_round() else 0)
+		_prefetch_music()
 	if not menu_open and not paused:
 		screen_lock = maxf(0.0, screen_lock - delta)
 		map_anim = maxf(0.0, map_anim - delta)
@@ -208,6 +211,20 @@ func music_intensity() -> int:
 		State.TITLE, State.RUN_OVER:
 			return 0
 	return run.level + (1 if is_boss() and in_round() else 0)
+
+
+## Builds the loops the next screens will want while this one plays, so switching is instant.
+## Most urgent first: the next game's loop (faster) or the next level's first one, then map and shop.
+func _prefetch_music() -> void:
+	music.background_budget = Music.SAMPLES_PER_FRAME if in_round() else Music.MENU_SAMPLES_PER_FRAME
+	var round_intensity: int = run.level + (1 if is_boss() else 0)
+	if in_round():
+		music.prefetch(round_intensity, "game", run.games[0] + run.games[1] + 1)
+	elif state != State.TITLE and state != State.RUN_OVER:
+		music.prefetch(round_intensity, "game", 0)
+	music.prefetch(0, "map")
+	music.prefetch(0, "shop")
+	music.prefetch(0, "game")
 
 
 func music_track() -> String:

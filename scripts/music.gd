@@ -3,14 +3,24 @@ extends Node
 ## channels, a 4-bit wave channel (bass) and an LFSR noise channel, mixed down to 8-bit at 16384 Hz.
 ## Three tracks: "game" (layers join as levels rise, tempo rises per level and per game played in
 ## the level), "map" (calm, D minor) and "shop" (bouncy, C major). A two-bar loop is rendered a slice
-## per frame so nothing stutters, then swapped in.
+## per frame so nothing stutters. Finished loops are cached, and the game asks for the loops it will
+## need next (prefetch), so changing screens normally switches music instantly. When a loop is not
+## ready yet, the old music stops at once and the new loop is built at high priority.
 
 const Tuning := preload("res://scripts/tuning.gd")
 
 const RATE := 16384
 const STEPS := 32
-## Samples rendered per frame while a new loop is built (about 1-2 ms on a desktop, more on phones).
+## Samples rendered per frame while building in the background (about 1-2 ms on a desktop).
 const SAMPLES_PER_FRAME := 1000
+## Background samples per frame on menu screens, where nothing time-critical runs.
+const MENU_SAMPLES_PER_FRAME := 4000
+## Samples per frame when the screen is waiting in silence for its loop (done in well under a second).
+const URGENT_SAMPLES_PER_FRAME := 8000
+## Float-to-8-bit samples converted per frame once a loop is rendered.
+const CONVERT_PER_FRAME := 12000
+const CACHE_MAX := 16
+const PREFETCH_MAX := 6
 const MAX_BPM := 200.0
 const LAYERS := ["pulse", "bass", "hats", "arp", "lead"]
 ## The intensity at which each game-track layer joins when it is set to AUTO.
@@ -40,7 +50,14 @@ const TRACKS := {
 var tuning: Tuning
 var player: AudioStreamPlayer
 var current_key: String = ""
+## The loop the current screen wants; empty once it plays.
+var wanted_key: String = ""
+## Background build speed: the game raises it on menu screens and keeps it low during play.
+var background_budget: int = SAMPLES_PER_FRAME
 var _job: Dictionary = {}
+var _cache: Dictionary = {}
+var _cache_order: Array[String] = []
+var _queue: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -60,24 +77,99 @@ func _process(_delta: float) -> void:
 	var volume: float = tuning.get_value("music_volume") / 100.0
 	player.volume_db = linear_to_db(volume * 0.8) if volume > 0.0 else -80.0
 	if _job.is_empty():
-		return
-	if _render_some(SAMPLES_PER_FRAME):
+		if _queue.is_empty():
+			return
+		_start_job(_queue.pop_front())
+	var urgent: bool = _job.key == wanted_key
+	if _work(URGENT_SAMPLES_PER_FRAME if urgent else background_budget):
 		_finish_job()
 
 
-## Asks for the loop for a track, intensity (game track) and games played in the level;
-## builds it in the background if it changed.
-func play_for(intensity: int, track: String = "game", games: int = 0) -> void:
-	var level: int = effective_intensity(intensity)
+## Describes the loop for a track, intensity (game track) and games played in the level.
+func spec(intensity: int, track: String = "game", games: int = 0) -> Dictionary:
+	# Map and shop music doesn't change with the level, so every level shares one cached loop.
+	var level: int = effective_intensity(intensity) if track == "game" else 0
 	var bpm: float = track_bpm(track, level, games)
 	var layers: Array = layers_for(track, level)
-	var key: String = "%s|%d|%d|%s" % [track, level, roundi(bpm), ",".join(layers)]
-	if key == current_key or (not _job.is_empty() and _job.key == key):
+	return {"key": "%s|%d|%d|%s" % [track, level, roundi(bpm), ",".join(layers)],
+		"track": track, "level": level, "bpm": bpm}
+
+
+## Switches to the loop for this screen: instantly when cached, otherwise silence until it is built.
+func play_for(intensity: int, track: String = "game", games: int = 0) -> void:
+	var want: Dictionary = spec(intensity, track, games)
+	if want.key == current_key or want.key == wanted_key:
 		return
+	if _cache.has(want.key):
+		_switch_to(want.key)
+		return
+	# Kill the old music now rather than letting it play on while the new loop is built.
+	wanted_key = want.key
+	current_key = ""
+	_ensure_player()
+	player.stop()
+	if _job.is_empty() or _job.key != want.key:
+		if not _job.is_empty():
+			_queue.push_front(_job.spec)
+		_queue = _queue.filter(func(q: Dictionary) -> bool: return q.key != want.key)
+		_start_job(want)
+
+
+## Builds a loop in the background if it is not cached yet, so a later play_for is instant.
+func prefetch(intensity: int, track: String = "game", games: int = 0) -> void:
+	var want: Dictionary = spec(intensity, track, games)
+	if _cache.has(want.key) or (not _job.is_empty() and _job.key == want.key):
+		return
+	for q in _queue:
+		if q.key == want.key:
+			return
+	if _queue.size() < PREFETCH_MAX:
+		_queue.append(want)
+
+
+func is_cached(intensity: int, track: String = "game", games: int = 0) -> bool:
+	return _cache.has(spec(intensity, track, games).key)
+
+
+func _switch_to(key: String) -> void:
+	_ensure_player()
+	player.stream = _cache[key]
+	current_key = key
+	wanted_key = ""
+	_cache_order.erase(key)
+	_cache_order.append(key)
+	if player.is_inside_tree():
+		player.play()
+
+
+func _start_job(want: Dictionary) -> void:
 	var buf := PackedFloat32Array()
-	buf.resize(loop_samples(bpm))
-	_job = {"key": key, "events": build_events(level, track, bpm), "buf": buf, "next": 0, "k": 0,
-		"phase": 0.0, "lfsr": 0x4000, "noise": 1.0}
+	buf.resize(loop_samples(want.bpm))
+	_job = {"key": want.key, "spec": want, "events": build_events(want.level, want.track, want.bpm), "buf": buf,
+		"next": 0, "k": 0, "phase": 0.0, "lfsr": 0x4000, "noise": 1.0, "data": PackedByteArray(), "converted": 0}
+
+
+## Renders, then converts to 8-bit, a frame's worth. Returns true when the loop is complete.
+func _work(budget: int) -> bool:
+	if _job.next < _job.events.size():
+		_render_some(budget)
+		return false
+	return _convert_some(CONVERT_PER_FRAME)
+
+
+func _convert_some(budget: int) -> bool:
+	var buf: PackedFloat32Array = _job.buf
+	var data: PackedByteArray = _job.data
+	if data.size() != buf.size():
+		data.resize(buf.size())
+	var i: int = _job.converted
+	var stop: int = mini(buf.size(), i + budget)
+	while i < stop:
+		data[i] = int(clampf(buf[i], -1.0, 1.0) * 110.0) & 0xFF
+		i += 1
+	_job.data = data
+	_job.converted = i
+	return i >= buf.size()
 
 
 func effective_intensity(intensity: int) -> int:
@@ -205,33 +297,30 @@ func _render_some(budget: int) -> bool:
 
 
 func _finish_job() -> void:
-	var buf: PackedFloat32Array = _job.buf
-	var data := PackedByteArray()
-	data.resize(buf.size())
-	for i in buf.size():
-		data[i] = int(clampf(buf[i], -1.0, 1.0) * 110.0) & 0xFF
 	var wav := AudioStreamWAV.new()
 	wav.format = AudioStreamWAV.FORMAT_8_BITS
 	wav.mix_rate = RATE
-	wav.data = data
+	wav.data = _job.data
 	wav.loop_mode = AudioStreamWAV.LOOP_FORWARD
 	wav.loop_begin = 0
-	wav.loop_end = buf.size()
-	current_key = _job.key
+	wav.loop_end = _job.data.size()
+	var key: String = _job.key
 	_job = {}
-	_ensure_player()
-	player.stream = wav
-	if player.is_inside_tree():
-		player.play()
+	_cache[key] = wav
+	_cache_order.append(key)
+	while _cache_order.size() > CACHE_MAX:
+		var old: String = _cache_order.pop_front()
+		if old != current_key:
+			_cache.erase(old)
+	if key == wanted_key:
+		_switch_to(key)
 
 
-## Builds a loop immediately (tests and tools). Returns the stream.
+## Builds and plays a loop immediately (tests and tools). Returns the stream.
 func render_now(intensity: int, track: String = "game", games: int = 0) -> AudioStreamWAV:
 	_ensure_player()
 	play_for(intensity, track, games)
-	if _job.is_empty():
-		return player.stream
-	while not _render_some(1 << 20):
-		pass
-	_finish_job()
+	while not _job.is_empty():
+		if _work(1 << 22):
+			_finish_job()
 	return player.stream
