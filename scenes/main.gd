@@ -135,8 +135,8 @@ var screen_lock: float = 0.0
 var map_anim: float = 0.0
 var offers: Array[String] = []
 var offer_index: int = 0
-## True for the free upgrade picked at the start of a run.
-var starting_pick: bool = false
+## True while picking the upgrade that comes with the one-time revive; the level restarts after.
+var revive_pick: bool = false
 var shop_offers: Array[String] = []
 var shop_index: int = 0
 var title_index: int = 0
@@ -176,6 +176,7 @@ var sfx := {}
 func _ready() -> void:
 	rng.randomize()
 	if persist_tuning:
+		_migrate_old_saves()
 		tuning.load_saved()
 		run.load_saved()
 	sfx["paddle"] = _make_blip(880.0, 0.05)
@@ -193,6 +194,16 @@ func _ready() -> void:
 	music = Music.new()
 	music.tuning = tuning
 	add_child(music)
+
+
+## The game was called "GBA Pong"; desktop builds keep saves in a folder named after the game,
+## so copy them from the old folder the first time. (The web build's save path has no name in it.)
+func _migrate_old_saves() -> void:
+	var old_dir: String = OS.get_user_data_dir().get_base_dir().path_join("GBA Pong")
+	for file in ["save.cfg", "tuning.cfg"]:
+		var old_path: String = old_dir.path_join(file)
+		if not FileAccess.file_exists("user://" + file) and FileAccess.file_exists(old_path):
+			DirAccess.copy_absolute(old_path, OS.get_user_data_dir().path_join(file))
 
 
 func _process(delta: float) -> void:
@@ -559,15 +570,12 @@ func _leave_to_title() -> void:
 
 # ---------------------------------------------------------------- run flow
 
-## A new run opens with a free upgrade pick, then the map.
+## A new run goes straight into the first match; the map appears after it.
 func start_run() -> void:
 	run.start()
 	run.foe = Foes.roll(rng, is_boss())
-	offers = Upgrades.offers(rng, run.stacks)
-	offer_index = 0
-	starting_pick = true
-	state = State.UPGRADE
-	screen_lock = SCREEN_LOCK
+	revive_pick = false
+	start_round()
 	_play("menu")
 
 
@@ -725,10 +733,22 @@ func _after_round() -> void:
 		run.foe = Foes.roll(rng, is_boss(), run.foe)
 		offers = Upgrades.offers(rng, run.stacks)
 		offer_index = 0
-		starting_pick = false
+		revive_pick = false
 		if offers.is_empty():
 			_enter_map(true)
 		else:
+			state = State.UPGRADE
+	elif not run.revive_used:
+		# The first lost round of a run: revive, pick an upgrade, then replay the same level.
+		run.revive_used = true
+		run.streak = 0
+		run.save()
+		offers = Upgrades.offers(rng, run.stacks)
+		offer_index = 0
+		if offers.is_empty():
+			start_round()
+		else:
+			revive_pick = true
 			state = State.UPGRADE
 	elif run.has_relic("second") and not run.second_wind_used:
 		# SECOND WIND: the run survives one lost round; replay the same level.
@@ -747,8 +767,11 @@ func pick_upgrade(index: int) -> void:
 		return
 	run.add(offers[index])
 	_play("power")
-	_enter_map(not starting_pick)
-	starting_pick = false
+	if revive_pick:
+		revive_pick = false
+		start_round()
+	else:
+		_enter_map(true)
 
 
 func _enter_map(advanced: bool) -> void:

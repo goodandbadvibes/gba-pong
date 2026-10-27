@@ -31,7 +31,7 @@ const RIGHT := PixelFont.Align.RIGHT
 # ---------------------------------------------------------------- title
 
 static func draw_title(g: Node2D) -> void:
-	PixelFont.draw(g, "GBA PONG", W / 2, 22, 3, Palette.WHITE, CENTER)
+	PixelFont.draw(g, "PONGER", W / 2, 22, 3, Palette.WHITE, CENTER)
 	PixelFont.draw(g, "A ROGUELITE PONG RUN", W / 2, 44, 1, Palette.MID, CENTER)
 	PixelFont.draw(g, "BEST %d ROUNDS   GEMS %d" % [g.run.best_cleared, g.run.gems], W / 2, 62, 1, Palette.GEM, CENTER)
 	var items: Array = g.title_items()
@@ -118,8 +118,8 @@ static func draw_map(g: Node2D) -> void:
 # ---------------------------------------------------------------- upgrade and shop cards
 
 static func draw_upgrade(g: Node2D) -> void:
-	PixelFont.draw(g, "NEW RUN" if g.starting_pick else "ROUND CLEAR!", W / 2, 2, 2, Palette.PLAYER, CENTER)
-	PixelFont.draw(g, "CHOOSE A STARTING UPGRADE" if g.starting_pick else "CHOOSE AN UPGRADE", W / 2, 17, 1, Palette.MID, CENTER)
+	PixelFont.draw(g, "REVIVED!" if g.revive_pick else "ROUND CLEAR!", W / 2, 2, 2, Palette.GEM if g.revive_pick else Palette.PLAYER, CENTER)
+	PixelFont.draw(g, "ONE MORE TRY: CHOOSE AN UPGRADE" if g.revive_pick else "CHOOSE AN UPGRADE", W / 2, 17, 1, Palette.MID, CENTER)
 	var count: int = g.offers.size()
 	for i in count:
 		var id: String = g.offers[i]

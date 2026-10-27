@@ -1,4 +1,4 @@
-# GBA Pong
+# Ponger
 
 Pong at Game Boy Advance limits: 240x160, integer-scaled pixels, a small 15-bit palette,
 a 3x5 pixel font and square-wave blips. Made with Godot 4.7.2.
@@ -7,9 +7,10 @@ a 3x5 pixel font and square-wave blips. Made with Godot 4.7.2.
 
 **How a run works:** points win a *game* (first to 3), games win a *round* (best of 5; level 1
 needs just one game win and level 2 is a best of 3), and
-each round is one node on the map. A run starts with a free pick of one of three upgrades. Win a
-round to pick another and move to the next
-node; lose one and the run is over. Every 2 levels the map stops at a **relic shop**. Every level brings a new named opponent in its own color (bosses in red). Whoever loses a round
+each round is one node on the map. A run starts straight in the first match; the map appears
+after it. Win a round to pick an upgrade and move to the next
+node; lose one and the run is over, except the first time in a run: then you are revived, pick
+an upgrade, and replay that level. Every 2 levels the map stops at a **relic shop**. Every level brings a new named opponent in its own color (bosses in red). Whoever loses a round
 sees their paddle explode. An arrow at each serve shows which way the ball will go. Opponents get faster
 and aim better every level, gain one random upgrade per level after the first (their burn, slime and poison hit you too), and every 5th level is a boss. You earn gems as you go (2 per round cleared, 5 per boss, plus gem shards you collect) and
 spend them on relics. Your best run and gems are saved, and a run can be suspended and continued.

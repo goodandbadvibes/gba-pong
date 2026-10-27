@@ -29,6 +29,8 @@ var games: Array[int] = [0, 0]
 ## Games won in a row (MOMENTUM relic).
 var streak: int = 0
 var second_wind_used: bool = false
+## The free revive after the first lost round of a run.
+var revive_used: bool = false
 var shop_pending: bool = false
 
 var best_cleared: int = 0
@@ -49,6 +51,7 @@ func start() -> void:
 	games.assign([0, 0])
 	streak = 0
 	second_wind_used = false
+	revive_used = false
 	shop_pending = false
 	suspended = {}
 	save()
@@ -129,7 +132,7 @@ func finish() -> Dictionary:
 func to_dict() -> Dictionary:
 	return {"level": level, "cleared": cleared, "bosses": bosses, "shards": shards, "tithe": tithe,
 		"stacks": stacks.duplicate(), "cpu_stacks": cpu_stacks.duplicate(), "relics": relics.duplicate(), "streak": streak,
-		"second_wind_used": second_wind_used, "shop_pending": shop_pending, "foe": foe.duplicate()}
+		"second_wind_used": second_wind_used, "revive_used": revive_used, "shop_pending": shop_pending, "foe": foe.duplicate()}
 
 
 func from_dict(d: Dictionary) -> void:
@@ -144,6 +147,7 @@ func from_dict(d: Dictionary) -> void:
 	relics.assign(d.get("relics", []))
 	streak = int(d.get("streak", 0))
 	second_wind_used = bool(d.get("second_wind_used", false))
+	revive_used = bool(d.get("revive_used", false))
 	shop_pending = bool(d.get("shop_pending", false))
 	games.assign([0, 0])
 

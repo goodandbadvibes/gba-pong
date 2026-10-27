@@ -52,7 +52,8 @@ func _initialize() -> void:
 	_test_suspend_and_continue()
 	_test_main_menu_ends_run()
 	# Run start, CPU upgrades, poison, booster, power-up ramp
-	_test_run_starts_with_upgrade_pick()
+	_test_run_starts_in_first_match()
+	_test_first_loss_revives_with_upgrade()
 	_test_cpu_gains_upgrades_per_level()
 	_test_cpu_flame_burns_player()
 	_test_venom_builds_poison_and_triggers()
@@ -113,6 +114,8 @@ func _game() -> Node2D:
 	var game := _new_game()
 	game.start_run()
 	game.start_round()
+	# Most rule tests want a lost round to end the run; the revive has its own test.
+	game.run.revive_used = true
 	return game
 
 
@@ -488,15 +491,7 @@ func _drag(game: Node2D, pos: Vector2, relative: Vector2, index: int = 0) -> voi
 func _test_tap_flow_title_map_round() -> void:
 	var game := _new_game()
 	_touch(game, Vector2(120.0, 90.0), true)
-	_expect(game.state == game.State.UPGRADE and game.starting_pick, "tapping NEW RUN should open the starting upgrade pick")
-	game.screen_lock = 0.0
-	var Screens: GDScript = load("res://scripts/screens.gd")
-	var first: Vector2 = Screens.card_rect(0, game.offers.size()).get_center()
-	_touch(game, first, true)
-	_expect(game.state == game.State.MAP and game.map_anim == 0.0, "taking the starting upgrade should open the map")
-	game.screen_lock = 0.0
-	_touch(game, Vector2(60.0, 100.0), true)
-	_expect(game.state == game.State.SERVE, "a tap on the map should start the round")
+	_expect(game.state == game.State.SERVE and game.run.level == 1, "tapping NEW RUN should go straight into the first match")
 	game.free()
 
 
@@ -876,14 +871,37 @@ func _test_music_renders_a_loop() -> void:
 
 # ---------------------------------------------------------------- run start, CPU upgrades
 
-func _test_run_starts_with_upgrade_pick() -> void:
+func _test_run_starts_in_first_match() -> void:
 	var game := _new_game()
+	game.tuning.set_value("points_per_game", 1.0)
+	game.tuning.set_value("best_of", 1.0)
 	game.start_run()
-	_expect(game.state == game.State.UPGRADE and game.starting_pick and game.offers.size() == 3, "a run should start with a pick of 3 upgrades")
-	var picked: String = game.offers[2]
-	game.pick_upgrade(2)
-	_expect(game.state == game.State.MAP and game.map_anim == 0.0 and game.run.stack(picked) == 1 and not game.starting_pick, "the starting pick should lead to the map at level 1")
+	_expect(game.state == game.State.SERVE and game.run.level == 1 and game.run.stacks.is_empty(), "a run should start in the first match with no upgrade pick")
 	_expect(game.run.cpu_stacks.is_empty(), "the first opponent has no upgrades")
+	_score_point(game, 0)
+	_step(game, 150)
+	_expect(game.state == game.State.UPGRADE and not game.revive_pick, "winning the first match offers an upgrade")
+	game.pick_upgrade(0)
+	_expect(game.state == game.State.MAP and game.run.level == 2, "the map appears only after the first match")
+	game.free()
+
+
+func _test_first_loss_revives_with_upgrade() -> void:
+	var game := _new_game()
+	game.tuning.set_value("points_per_game", 1.0)
+	game.tuning.set_value("best_of", 1.0)
+	game.start_run()
+	var foe: String = game.foe_name()
+	_score_point(game, 1)
+	_step(game, 150)
+	_expect(game.state == game.State.UPGRADE and game.revive_pick and game.run.revive_used, "the first lost round should revive the player with an upgrade pick")
+	var picked: String = game.offers[0]
+	game.pick_upgrade(0)
+	_expect(game.state == game.State.SERVE and game.run.level == 1 and game.foe_name() == foe, "after the pick the same level starts again against the same opponent")
+	_expect(game.run.stack(picked) == 1, "the revive upgrade is kept")
+	_score_point(game, 1)
+	_step(game, 150)
+	_expect(game.state == game.State.RUN_OVER, "the revive happens only once per run")
 	game.free()
 
 
@@ -1075,7 +1093,6 @@ func _test_each_level_has_a_named_opponent() -> void:
 	game.tuning.set_value("best_of", 1.0)
 	game.tuning.set_value("boss_every", 3.0)
 	game.start_run()
-	game.pick_upgrade(0)
 	var first: Dictionary = game.run.foe.duplicate()
 	_expect(first.has("name") and first.name != "" and game.foe_color() == first.color, "level 1 should have a named opponent with a color")
 	_expect(game.foe_color() != game.Palette.PLAYER, "the opponent never uses the player's orange")
