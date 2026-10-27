@@ -83,6 +83,7 @@ func _initialize() -> void:
 	_test_level_jingles()
 	_test_content_files_are_complete()
 	_test_content_numbers_drive_the_game()
+	_test_pause_button_by_touch()
 	# Touch
 	_test_tap_flow_title_map_round()
 	_test_swipe_moves_paddle()
@@ -1312,4 +1313,21 @@ func _test_content_numbers_drive_the_game() -> void:
 	game.apply_powerup(game.PowerUp.FAST_BALL, 0, ball)
 	_expect(is_equal_approx(ball.vel.x, 200.0), "FAST BALL speed_mult from the content file should apply")
 	game.PU_INFO[game.PowerUp.FAST_BALL].speed_mult = saved_mult
+	game.free()
+
+
+func _test_pause_button_by_touch() -> void:
+	var game := _game()
+	_playing(game, Vector2(120.0, 80.0), Vector2(60.0, 0.0), 0)
+	_touch(game, game.PAUSE_BUTTON.get_center(), true)
+	_expect(game.paused, "tapping the II button during play should pause")
+	_touch(game, game.PAUSE_BUTTON.get_center(), false)
+	game.pause_choose(_pause_id(game, "resume"))
+	_touch(game, Vector2(22.0, 20.0), true)
+	_expect(game.paused, "a tap just beside the button (thumb-sized area) should also pause")
+	game.set_paused(false)
+	game._enter_map(false)
+	game.screen_lock = 0.0
+	_touch(game, game.PAUSE_BUTTON.get_center(), true)
+	_expect(game.paused and game.state == game.State.MAP, "the button should pause on the map too, not start the round")
 	game.free()

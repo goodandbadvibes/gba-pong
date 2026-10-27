@@ -364,7 +364,9 @@ func _consume() -> void:
 # ---------------------------------------------------------------- touch
 
 const DEBUG_HOTSPOT := Rect2(W / 2 - 32, 0, 64, TOP)
-const PAUSE_BUTTON := Rect2(0, 0, 13, 13)
+## Drawn 13x13 in the top-left corner; the tap area is bigger so it is easy to hit with a thumb.
+const PAUSE_BUTTON := Rect2(1, 1, 13, 13)
+const PAUSE_TAP := Rect2(0, 0, 26, 24)
 const TOUCH_UP := Rect2(W - 64, TOP + 8, 30, 30)
 const TOUCH_DOWN := Rect2(W - 64, BOTTOM - 38, 30, 30)
 const MENU_BAR_H := 12
@@ -407,7 +409,7 @@ func _touch(event: InputEvent) -> void:
 	if DEBUG_HOTSPOT.has_point(touch.position):
 		_toggle_menu()
 		return
-	if can_pause() and PAUSE_BUTTON.has_point(touch.position):
+	if can_pause() and PAUSE_TAP.has_point(touch.position):
 		set_paused(true)
 		return
 	if screen_lock > 0.0 and not in_round():
@@ -1741,9 +1743,12 @@ func _draw() -> void:
 		_draw_menu()
 
 
+## A framed II button, so it reads as a button on a phone.
 func _draw_pause_button() -> void:
-	draw_rect(Rect2(3, 3, 2, 6), DIM)
-	draw_rect(Rect2(7, 3, 2, 6), DIM)
+	draw_rect(PAUSE_BUTTON, DIM)
+	draw_rect(PAUSE_BUTTON.grow(-1), BG)
+	draw_rect(Rect2(PAUSE_BUTTON.position + Vector2(4, 3), Vector2(2, 7)), WHITE)
+	draw_rect(Rect2(PAUSE_BUTTON.position + Vector2(7, 3), Vector2(2, 7)), WHITE)
 
 
 func _draw_court() -> void:
@@ -2006,9 +2011,9 @@ func _draw_rope() -> void:
 ## First HUD line: level (red on a boss level) and the current game of the best-of on the left,
 ## the opponent's name in its color on the right, above its score.
 func _draw_round_info() -> void:
-	PixelFont.draw(self, "LV%d" % run.level, 15, 2, 1, BOSS_COL if is_boss() else MID)
+	PixelFont.draw(self, "LV%d" % run.level, 17, 2, 1, BOSS_COL if is_boss() else MID)
 	var game_no: int = mini(run.games[0] + run.games[1] + 1, round_best_of())
-	PixelFont.draw(self, "G%d/%d" % [game_no, round_best_of()], 34, 2, 1, MID)
+	PixelFont.draw(self, "G%d/%d" % [game_no, round_best_of()], 36, 2, 1, MID)
 	PixelFont.draw(self, foe_name(), W - 2, 2, 1, side_col[1], PixelFont.Align.RIGHT)
 
 
@@ -2041,7 +2046,7 @@ func _draw_poison_areas() -> void:
 
 ## Small icons with time bars on the second HUD line for each active paddle effect.
 func _draw_effect_icons(side: int) -> void:
-	var x: int = 15 if side == 0 else W - 7
+	var x: int = 17 if side == 0 else W - 7
 	var step: int = 8 if side == 0 else -8
 	for name in effects[side]:
 		var color: Color = effect_color(name)
